@@ -13,9 +13,9 @@ _configure6PWM
 
 
 //// define which motors are being used:
-// #define MOTOR1_HUB83MM // motor 1 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
-// #define MOTOR2_HUB83MM // motor 2 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
-#define MOTOR1_BRH5065 // motor 1 is a 'BRH5065-200KV' motor
+#define MOTOR1_HUB83MM // motor 1 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
+#define MOTOR2_HUB83MM // motor 2 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
+// #define MOTOR1_BRH5065 // motor 1 is a 'BRH5065-200KV' motor
 // #define MOTOR2_BRH5065 // motor 2 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
 // #define MOTOR1_debugMotor // a small gimbal motor i use for testing
 
@@ -334,7 +334,7 @@ _configure6PWM
     #else // if calibration still needs to be done
       #warning("compiling for motor 1 calibration at boot!")
       if((ESC_MODULATION_TYPE == FOCModulationType::Trapezoid_120) || (ESC_MODULATION_TYPE == FOCModulationType::Trapezoid_150)) {
-        debugSerial.printf("warning: motor 1 calibration will be rather choppy, because ESC_MODULATION_TYPE == %s\n",_PREPROSTRING(ESC_MODULATION_TYPE));
+        TLB_log_w("warning: motor 1 calibration will be rather choppy, because ESC_MODULATION_TYPE == %s",_PREPROSTRING(ESC_MODULATION_TYPE));
       }
     #endif
     #ifdef MOTOR1_CALIBRATED_ZERO_ANGLE // if sensor zero-offset calibration has already been done
@@ -362,14 +362,14 @@ _configure6PWM
     //ESC2_motor.velocity_index_search = ESC_VELOC_INDEX; // index search velocity (radians/sec)
     ESC2_motor.velocity_limit = ESC2_VELOC_MAX; // velocity limit (radians/sec)
     ESC2_motor.sensor_offset = ESC2_SENSOR_OFFSET; // sensor absolute-zero offset (radians)
-    ESC2_driver.voltage_limit = ESC2_VOLTAGE_LIMIT; // (see ESC_VOLTAGE_SUPPLY for scale) Max DC voltage allowed - default voltage_power_supply
+    ESC2_driver.voltage_limit = ESC2_VOLTAGE_LIMIT; // 
     ESC2_motor.current_limit = ESC2_CURRENT_LIMIT;// "not set on the begining"?
     #ifdef MOTOR2_CALIBRATED_DIRECTION // if sensor direction calibration has already been done
       ESC2_motor.sensor_direction = MOTOR2_CALIBRATED_DIRECTION;
     #else // if calibration still needs to be done
       #warning("compiling for motor 2 calibration at boot!")
       if((ESC_MODULATION_TYPE == FOCModulationType::Trapezoid_120) || (ESC_MODULATION_TYPE == FOCModulationType::Trapezoid_150)) {
-        debugSerial.printf("warning: motor 2 calibration will be rather choppy, because ESC_MODULATION_TYPE == %s\n",_PREPROSTRING(ESC_MODULATION_TYPE));
+        TLB_log_w("warning: motor 2 calibration will be rather choppy, because ESC_MODULATION_TYPE == %s",_PREPROSTRING(ESC_MODULATION_TYPE));
       }
     #endif
     #ifdef MOTOR2_CALIBRATED_ZERO_ANGLE // if sensor zero-offset calibration has already been done
