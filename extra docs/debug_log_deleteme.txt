@@ -1,0 +1,44 @@
+
+i'm still having some issues with the hall-sensor interrupts.
+
+i suspect many possible causes:
+- interrupt trigger is so fast that digitalRead reads opposite (because of slow rising voltage)
+- noInterrupts() and interrupts() could be fucking things up (they are run very frequently)
+- hall sensors should be on 5V
+
+so far i've implemented rudamentary 'fixes', where interrupt errors are 'fixed' by forcing a digitalRead of all pins (again).
+This seems to work for the majority of the bad-state errors, but i still get no-state-change glitches (doubled interrupts) and skipped-states
+
+The main glitch i'm currently seeing is the (fixed) no-state-change one,
+which occurs whenever any HALL pin rises (slowly), and the ESC pulses (20kHz) at the same time.
+As the hall sensor signal takes about >50us to rise (with 3.6k pullups & 10nF caps (no-series)), this is almost guaranteed to happen (20kHz -> 50us period).
+The interrupt is triggered preemptively by the noise, then the digitalRead reads the state wrong (only the noise-spike was above the HIGH threshold).
+
+i also see debug messages like 
+[465068][D][HallSensor.cpp:70] updateState(): 18 no state change 001        (presumably just a repeat interrupt)
+[465074][D][HallSensor.cpp:62] updateState():   18 bad-state glitch fixed 000 -> 100     (presumably also caused by noise)
+[465074][D][HallSensor.cpp:88] updateState(): 18 skipped state 0 -> 2    (currently investigating)
+
+
+i've got some screenshots of the signal getting even more noisy (but i need to retest with a battery instead of power-supply to be sure)
+
+also, the motor can still jiggle around its target location, but that's more an effect of the P (no I or D) loop control, i think.
+
+
+here is a fun one: (see scope screenshot: "missed B (ch2) 4ms earlier, error comes on next interrupt.png")
+[207982][D][HallSensor.cpp:70] updateState(): 18 no state change 001                            (the scope showed it just missed the rising B (011))
+[207985][D][HallSensor.cpp:62] updateState():   18 bad-state glitch fixed 000 -> 010            (well, yeah, it should've been 011->010. B was incorrect)
+[207985][D][HallSensor.cpp:88] updateState(): 18 skipped state 0 -> 4                           (well, yeah, it skipped state 5 (011))
+I need to tune this shit a little more, to get that noise down (and rising times up),
+ or it's going to have to be Schmitt triggers all around, i guess.
+
+
+
+next up:
+trace origin of 20kHz noise:
+- does it even really happen (when using good GND probe on 3.3V)
+- does it simple penetrate everything, just raw EMI?
+- does it come from the VBAT/12V supply all the way down to 3.3V?
+- how to fix
+  * more small and/or bulk capacity on 5V and/or 3.3V PSUs
+re-tune hall pullups + caps.
