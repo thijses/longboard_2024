@@ -37,7 +37,7 @@ I need to tune this shit a little more, to get that noise down (and rising times
 next up:
 trace origin of 20kHz noise:
 - does it even really happen (when using good GND probe on 3.3V)
-- does it simple penetrate everything, just raw EMI?
+- does it simply penetrate everything, just raw EMI?
 - does it come from the VBAT/12V supply all the way down to 3.3V?
 - how to fix
   * more small and/or bulk capacity on 5V and/or 3.3V PSUs

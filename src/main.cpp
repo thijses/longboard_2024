@@ -226,7 +226,7 @@ void setup() {
     // while(!debugSerial) { /*wait*/ } // doesn't wait for serial port to be OPENEND, BUT i believe it enabled re-uploading?!? (not sure why, but uploading can fail without this check)
     delay(3000); // patch, because USBCDC can't be bothered to wait
   #endif
-  TLB_log_i("boot %s %s", __DATE__, __TIME__); // even in release build, print something to me know the ESP is alive (and which code it's running)
+  TLB_log_d("boot %s %s", __DATE__, __TIME__); // even in release build, print something to me know the ESP is alive (and which code it's running)
 
   #if TLB_DEBUG_VARIANT >= 0
     TLB_log_d("TLB_DEBUG_VARIANT %u",TLB_DEBUG_VARIANT);
@@ -270,10 +270,19 @@ void setup() {
 
     //// start FOC
     if((ESC_CONTROL_TYPE==MotionControlType::torque) || (ESC_CONTROL_TYPE==MotionControlType::velocity) || (ESC_CONTROL_TYPE==MotionControlType::angle)) {
-      TLB_log_d("starting FOC!");
+      TLB_log_v("starting FOC!");
       simpleFOCstart(); // align encoder and start full FOC (not needed for open-loop)
     } else { TLB_log_v("skipping FOC init, we're running open-loop!"); }
-    if(ESC1_motor.motor_status != FOCMotorStatus::motor_ready) { // should be motor_ready, otherwise will be motor_calib_failed
+    if(
+    #if (defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)) && defined(FOC_1_USE_HALL)
+      (ESC1_motor.motor_status != FOCMotorStatus::motor_ready)
+    #else
+      0
+    #endif
+    #if (defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)) && defined(FOC_2_USE_HALL)
+      || (ESC1_motor.motor_status != FOCMotorStatus::motor_ready)
+    #endif
+    ) { // should be motor_ready, otherwise will be motor_calib_failed
       TLB_log_e("FOC init (calib) failed! %x",ESC1_motor.motor_status); neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
       errorHaltHandler();
     }
