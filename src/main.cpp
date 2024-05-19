@@ -364,18 +364,24 @@ void loop() {
   } else {
     if(!ESC1_motor.enabled) { TLB_log_v("re-enabling"); simpleFOCstopFreeWheel(); neopixelWrite(RGB_BUILTIN, RGB_LED_OK); }
     if(TLB_rx.update()) {
-      const float maxBrakingTorque = DEF_VOLTAGE_SENSOR_ALIGN;
-      const float maxForwardTorque = ESC_VOLTAGE_LIMIT;
+      const float maxForwardTorque = ESC_VOLTAGE_LIMIT * 0.75;
+      const float maxBrakingTorque = ESC_VOLTAGE_LIMIT; // strong braking (to be tampered by reducing it as speed reduces)
+      const float brakingDecreseThresh = 5.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // once speed drops below this (final number in radians/sec), reduce braking
+      const float _brakingDecreseThreshInverted = 1.0f/brakingDecreseThresh; // efficiency trick
       uint32_t thisTime = millis();
       int16_t newTargetRaw = TLB_rx.get(0);
       float newTargetConverted = 0.0;
+      float currentSpeed = ((-ESC1_motor.shaft_velocity)+ESC2_motor.shaft_velocity)*0.5f;
       #ifdef LEGACY_TRANSMITTER
         newTargetRaw -= 1000; // rtlopez/espnow-rclink library only deals in RC 880~2120 values
         lastTime = thisTime;
         if(newTargetRaw < 25) { // braking
-          newTargetConverted = newTargetRaw; // copy int to float
-          newTargetConverted -= 25.0f; // get negative number
-          newTargetConverted *= (maxBrakingTorque / (25.0f)); // scale
+          if(currentSpeed > 0.0f) {
+            newTargetConverted = newTargetRaw; // copy int to float
+            newTargetConverted -= 25.0f; // get negative number
+            newTargetConverted *= (maxBrakingTorque / (25.0f)); // scale
+              newTargetConverted *= min(1.0f, abs(currentSpeed) * _brakingDecreseThreshInverted); // reduce braking below brakingDecreseThresh
+          }// else { newTargetConverted = 0.0;}
         } else if(newTargetRaw < 56) { // idling
           // if(ESC1_motor.enabled) { simpleFOCstartFreeWheel(); }
           newTargetConverted = 0.0; // 0-torque is functional free-wheel
@@ -386,8 +392,11 @@ void loop() {
       #else
         newTargetRaw -= 1500; // rtlopez/espnow-rclink library only deals in RC 880~2120 values
         if(newTargetRaw < 0) { // braking
-          newTargetConverted = newTargetRaw; // copy int to float
-          newTargetConverted *= (maxBrakingTorque / (128.0f)); // scale
+          if(currentSpeed > 0.0f) {
+            newTargetConverted = newTargetRaw; // copy int to float
+            newTargetConverted *= (maxBrakingTorque / (128.0f)); // scale
+            newTargetConverted *= min(1.0f, abs(currentSpeed) * _brakingDecreseThreshInverted); // reduce braking below brakingDecreseThresh
+          }// else { newTargetConverted = 0.0;}
         } else if(newTargetRaw == 0) { // idling
           // if(ESC1_motor.enabled) { simpleFOCstartFreeWheel(); }
           newTargetConverted = 0.0; // 0-torque is functional free-wheel

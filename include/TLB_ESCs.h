@@ -48,8 +48,7 @@ _configure6PWM
 #define ESC_TORQUE_TYPE       TorqueControlType::voltage // torque control type, without current sensors, only TorqueControlType::voltage is available
 #define ESC_MODULATION_TYPE   FOCModulationType::Trapezoid_120 // trapezoidal 120 should work best with HALL sensors {SinePWM,SpaceVectorPWM,Trapezoid_120,Trapezoid_150}
 #define ESC_PWM_FREQ          20000 // (Hz) PWM freq used for motor control. Lower reduces switching power, higher improves consistancy and noise
-// #define ESC_VOLTAGE_LIMIT     24.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power
-#define ESC_VOLTAGE_LIMIT     12.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // early testing
+#define ESC_VOLTAGE_LIMIT     24.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power
 // #define ESC_VOLTAGE_LIMIT      6.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // DEBUG
 #define ESC_SENSOR_ALIGN      DEF_VOLTAGE_SENSOR_ALIGN // (Volts) note: will get constrained to ESC_VOLTAGE_LIMIT
 #define ESC_VELOC_INDEX       DEF_INDEX_SEARCH_TARGET_VELOCITY // (radians/sec)
