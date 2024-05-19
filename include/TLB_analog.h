@@ -3,6 +3,7 @@ this file contains most of the analog (ADC) measurement stuff
 
 
 */
+#pragma once
 
 /*#include "main.cpp"*/ // this header file requires some things to be defined in main.cpp first
 #include "TLB_pinouts.h" // the pinout should be included in main.cpp BEFORE this file is included
@@ -38,20 +39,20 @@ float mes_VBAT() {
 
 float mes_Lcurrent() {
   //// TODO: calibrate!, and also measure 3V3 (periodically?). I'll add some averaging in another function
-  const static float ADCtoAmpOffset = (-3.3 / 2) * 1000; // 0 Amps is at middle of voltage range
-  const static float ADCtoAmpScale = 1.0/((float)ADC_CUR_SENSE_L_SCALE) / 1000.0;
+  const static float ADCtoAmpOffset = (-3.3 * 0.5) * 1000; // 0 Amps is at middle of voltage range
+  const static float ADCtoAmpScale = 1.0/((float)ADC_CUR_SENSE_L_SCALE);
   return((analogReadMilliVolts(PIN_CUR_SENSE_L) + ADCtoAmpOffset) * ADCtoAmpScale); // INEFFICIENT, but fancy ADC calibration (repeats calibration every time (i think))
 }
 float mes_M1current() {
   //// TODO: calibrate!, and also measure 3V3 (periodically?). I'll add some averaging in another function
-  const static float ADCtoAmpOffset = (-3.3 / 2) * 1000; // 0 Amps is at middle of voltage range
-  const static float ADCtoAmpScale = 1.0/((float)ADC_CUR_SENSE_M1_SCALE) / 1000.0;
+  const static float ADCtoAmpOffset = (-3.3 * 0.5) * 1000; // 0 Amps is at middle of voltage range
+  const static float ADCtoAmpScale = 1.0/((float)ADC_CUR_SENSE_M1_SCALE);
   return((analogReadMilliVolts(PIN_CUR_SENSE_M1) + ADCtoAmpOffset) * ADCtoAmpScale); // INEFFICIENT, but fancy ADC calibration (repeats calibration every time (i think))
 }
 float mes_M2current() {
   //// TODO: calibrate!, and also measure 3V3 (periodically?). I'll add some averaging in another function
-  const static float ADCtoAmpOffset = (-3.3 / 2) * 1000; // 0 Amps is at middle of voltage range
-  const static float ADCtoAmpScale = 1.0/((float)ADC_CUR_SENSE_M2_SCALE) / 1000.0;
+  const static float ADCtoAmpOffset = (-3.3 * 0.5) * 1000; // 0 Amps is at middle of voltage range
+  const static float ADCtoAmpScale = 1.0/((float)ADC_CUR_SENSE_M2_SCALE);
   return((analogReadMilliVolts(PIN_CUR_SENSE_M2) + ADCtoAmpOffset) * ADCtoAmpScale); // INEFFICIENT, but fancy ADC calibration (repeats calibration every time (i think))
 }
 

@@ -62,35 +62,9 @@ encoder issues debugging:
 */
 
 #include <Arduino.h>
-
 #include "TLB_logging.h"
-
-//// extra debug stuff (for HALL interrupts)
-#include "TLB_pinouts.h"
-const uint8_t debugIntPins[] = {PIN_EXT_PERIPH_1,PIN_EXT_PERIPH_2};
-volatile bool debugIntPinStates[sizeof(debugIntPins)] = {0}; // for a faster toggle
-#define TLB_DEBUG_TOGGLE(pindex)  digitalWrite(debugIntPins[pindex], debugIntPinStates[pindex]=!debugIntPinStates[pindex])
-// const uint8_t debugIntTimerCount = 4;
-// volatile uint32_t debugIntTimers[debugIntTimerCount] = {0};
-// volatile bool debugIntTimerFlags[debugIntTimerCount] = {0};
-// #if TLB_DEBUG_VARIANT == 1
-//   const uint32_t debutIntTimeThreshs[debugIntTimerCount] = {25,25,25000, 4294967295ul}; // {any ISR, no state change, dir change, TBD}
-// #elif TLB_DEBUG_VARIANT == 2
-//   const uint32_t debutIntTimeThreshs[debugIntTimerCount] = {25,25,25, 25}; // {A ISR, B ISR, C ISR, no state change}
-// #else
-//   const uint32_t debutIntTimeThreshs[debugIntTimerCount] = {4294967295ul}; // {TBD}
-// #endif
-// void TLB_DEBUG_TIME(uint8_t timdex) {
-//   uint32_t _debugTime = micros();
-//   debugIntTimerFlags[timdex] |= (_debugTime - debugIntTimers[timdex]) < debutIntTimeThreshs[timdex];
-//   debugIntTimers[timdex] = _debugTime;
-// }
-// const uint8_t debugSpeedTimerCount = 2;
-// volatile uint32_t debugSpeedTimers[debugSpeedTimerCount][2] = {0};
-// volatile bool debugSpeedTimerFlags[debugSpeedTimerCount] = {0};
-// #define TLB_DEBUG_SPEED(timdex,stasto) debugSpeedTimers[timdex][stasto]=ESP.getCycleCount();debugSpeedTimerFlags[timdex]|=stasto
-
 #include <SimpleFOC.h>
+#include "driver/temp_sensor.h"
 
 
 #define _KPH_TO_MPS     (0.27777777778f) // 1/3.6
@@ -98,7 +72,8 @@ volatile bool debugIntPinStates[sizeof(debugIntPins)] = {0}; // for a faster tog
 #define _RADPS_TO_ROTPS (0.15915494309f) // 1/TWO_PI
 
 const float speedLimit = 25.0/3.6; // (meters/sec) speed limit of longboard
-
+const float CPU_temperature_limit = 85.0f; // (deg Celsius) software temperature limit (starts ESCs free-wheeling)
+const uint32_t radioSilenceTimeout = 2000; // (millis) if radio has been silent for this long, start free-wheeling
 
 #ifdef ARDUINO_USB_CDC_ON_BOOT
   #define debugSerial  Serial // use ESP32-S3's native USB JTAG+serial for debug output
@@ -117,8 +92,8 @@ const float speedLimit = 25.0/3.6; // (meters/sec) speed limit of longboard
 #define RELEASE_BUILD_CHECK  (CORE_DEBUG_LEVEL > 0) // if building in release mode, speed and reliability are more important than debug data no-one will/can read
 
 #include "TLB_pinouts.h" // defines pins (based on PCB_R0x)
-
 #include "TLB_ESCs.h" // ESC stuff got too long, so i put it in a header file
+#include "TLB_comm.h"
 
 ///////////////////////////////////////// ADC constants /////////////////////////////////////////
 const float check_3V3_bounds[2] = {3.2, 3.4}; // (Volt) 3V3 measurements should fall within these bounds
@@ -141,6 +116,10 @@ const float check_M_cur_bounds_ext[2] = {-2.0, 25.0}; // (Amps) VBAT_M# current 
 int8_t cellCount; // gets initialized in setup()
 // const uint8_t minimumCellCount = ceil(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[0]); // battery can NEVER drop below absolute minimum cell voltage
 const uint8_t minimumCellCount = floor(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[1]); // fuck it, let the user decide when to fall of their board
+
+float CPU_temperature = 20.0;
+const float temperature_good_hyst = 5.0; // after an over-temperature event, the temperature needs to drop at least this much to be considered 'good' again
+volatile bool CPU_temperature_good=true;
 
 ///////////////////////////////////////// RGB LED colors ////////////////////////////////////////
 //// these defines are used in neopixelWrite(pin,r,g,b) like (pin,defined), where 'defined' contains the last 2 commas
@@ -200,18 +179,31 @@ bool initADCpins() {
   return(true); // TOOD: return something helpful
 }
 
+bool initEXT_PERIPHpins() { // these pins can also be used for debugging
+  pinMode(PIN_EXT_PERIPH_1, OUTPUT); /*digitalWrite(PIN_EXT_PERIPH_1, LOW);*/
+  pinMode(PIN_EXT_PERIPH_2, OUTPUT); /*digitalWrite(PIN_EXT_PERIPH_1, LOW);*/
+  return(true);
+}
+
 bool initRGB_LED() {
   pinMode(LED_BUILTIN, OUTPUT); /*digitalWrite(LED_BUILTIN, LOW);*/
   neopixelWrite(RGB_BUILTIN, RGB_LED_OFF); // set a state (because the LED will maintain its status between resets)
   return(true); // TOOD: return something helpful
 }
 
+void initTempSensor(){
+    temp_sensor_config_t temp_sensor = TSENS_CONFIG_DEFAULT();
+    temp_sensor.dac_offset = TSENS_DAC_L2;  // TSENS_DAC_L2 is default; L4(-40°C ~ 20°C), L2(-10°C ~ 80°C), L1(20°C ~ 100°C), L0(50°C ~ 125°C)
+    temp_sensor_set_config(temp_sensor);
+    temp_sensor_start();
+}
+
 void errorHaltHandler() {
-  while(debugSerial.available()) { debugSerial.read(); } // flush serial buffer
+  if(debugSerial) { while(debugSerial.available()) { debugSerial.read(); } } // flush serial buffer
   while(1) {
     delay(1000);neopixelWrite(RGB_BUILTIN, RGB_LED_OFF);delay(1000);neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
     TLB_log_i("stopped");
-    while(debugSerial.available()) { char readChar=debugSerial.read(); if((readChar=='r')||(readChar=='r')) { ESP.restart(); } }
+    if(debugSerial) { while(debugSerial.available()) { char readChar=debugSerial.read(); if((readChar=='r')||(readChar=='r')){ ESP.restart(); } } }
   }
 }
 
@@ -221,6 +213,9 @@ uint32_t sinOffset;
 
 void setup() {
   debugSerial.begin(115200);
+  initRGB_LED(); // setup RGB LED (for debug) (note: LED init is done early, for easier debug)
+  TLB_log_v("LED init done");
+  neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_1); // set a state (because the LED will maintain its status between resets)
   #if(RELEASE_BUILD_CHECK) // if this is NOT a release build
     debugSerial.setDebugOutput(true); // posts ESP (RTOS) debug here as well?
     // while(!debugSerial) { /*wait*/ } // doesn't wait for serial port to be OPENEND, BUT i believe it enabled re-uploading?!? (not sure why, but uploading can fail without this check)
@@ -228,18 +223,17 @@ void setup() {
   #endif
   TLB_log_d("boot %s %s", __DATE__, __TIME__); // even in release build, print something to me know the ESP is alive (and which code it's running)
 
-  #if TLB_DEBUG_VARIANT >= 0
-    TLB_log_d("TLB_DEBUG_VARIANT %u",TLB_DEBUG_VARIANT);
-    for(uint8_t i=0;i<sizeof(debugIntPins);i++) { pinMode(debugIntPins[i],OUTPUT); digitalWrite(debugIntPins[i], debugIntPinStates[i]); }
-  #endif
+  initEXT_PERIPHpins();
+  TLB_log_v("EXT_PERIPH init done");
 
-  initRGB_LED(); // setup RGB LED (for debug)
-  TLB_log_v("LED init done");
   initPSUs(); // setup step-down converter pins
   TLB_log_v("PSU init done");
   delay(10); // idk, why not
   initADCpins(); // setup ADC pins
   TLB_log_v("ADC init done");
+
+  initTempSensor();  temp_sensor_read_celsius(&CPU_temperature);
+  // TLB_log_v("temp sensor init done");
   
   float VBAT_used_for_FOC = mes_VBAT();
   TLB_log_i("VBAT used for FOC: %.2f",VBAT_used_for_FOC);
@@ -255,57 +249,59 @@ void setup() {
 
   //// init other stuff...
 
-  #if TLB_DEBUG_VARIANT > 0
-    ESC1_initSensor();
+  //// first, check the battery voltage
+  if((VBAT_used_for_FOC<check_VBAT_bounds_ext[0])||(VBAT_used_for_FOC>check_VBAT_bounds_ext[1])) {
+    TLB_log_e("not starting FOC, VBAT sucks! %.2fV", VBAT_used_for_FOC); neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
+    errorHaltHandler();
+  }
+  if(cellCount < minimumCellCount) {
+    TLB_log_e("not starting FOC, VBAT cell count estimate sucks! %d", cellCount); neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
+    errorHaltHandler();
+  }
+
+  //// start FOC
+  if((ESC_CONTROL_TYPE==MotionControlType::torque) || (ESC_CONTROL_TYPE==MotionControlType::velocity) || (ESC_CONTROL_TYPE==MotionControlType::angle)) {
+    TLB_log_v("starting FOC!");
+    simpleFOCstart(); // align encoder and start full FOC (not needed for open-loop)
+  } else { TLB_log_v("skipping FOC init, we're running open-loop!"); }
+  if(
+  #if (ESC1_DEFINED) && defined(FOC_1_USE_HALL)
+    (ESC1_motor.motor_status != FOCMotorStatus::motor_ready)
   #else
-    //// first, check the battery voltage
-    if((VBAT_used_for_FOC<check_VBAT_bounds_ext[0])||(VBAT_used_for_FOC>check_VBAT_bounds_ext[1])) {
-      TLB_log_e("not starting FOC, VBAT sucks! %.2fV", VBAT_used_for_FOC); neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
-      errorHaltHandler();
-    }
-    if(cellCount < minimumCellCount) {
-      TLB_log_e("not starting FOC, VBAT cell count estimate sucks! %uV", cellCount); neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
-      errorHaltHandler();
-    }
-
-    //// start FOC
-    if((ESC_CONTROL_TYPE==MotionControlType::torque) || (ESC_CONTROL_TYPE==MotionControlType::velocity) || (ESC_CONTROL_TYPE==MotionControlType::angle)) {
-      TLB_log_v("starting FOC!");
-      simpleFOCstart(); // align encoder and start full FOC (not needed for open-loop)
-    } else { TLB_log_v("skipping FOC init, we're running open-loop!"); }
-    if(
-    #if (defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)) && defined(FOC_1_USE_HALL)
-      (ESC1_motor.motor_status != FOCMotorStatus::motor_ready)
-    #else
-      0
-    #endif
-    #if (defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)) && defined(FOC_2_USE_HALL)
-      || (ESC1_motor.motor_status != FOCMotorStatus::motor_ready)
-    #endif
-    ) { // should be motor_ready, otherwise will be motor_calib_failed
-      TLB_log_e("FOC init (calib) failed! %x",ESC1_motor.motor_status); neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
-      errorHaltHandler();
-    }
-
-    // //// DEBUG: move to relevant section
-    // #if (defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)) && defined(FOC_1_USE_HALL)
-    //   ESC1_motor.LPF_velocity.Tf = 0.05; // hall sensors have a low resolution, so the velocity-measurement Low-Pass filter should be adjusted accordingly
-    //   // ESC1_motor.PID_velocity.P = 0.005; // just trying something
-    //   // ESC1_motor.PID_velocity.I = 0.1; // just trying something
-    // #endif
-    // #if (defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)) && defined(FOC_2_USE_HALL)
-    //   ESC2_motor.LPF_velocity.Tf = 0.05; // hall sensors have a low resolution, so the velocity-measurement Low-Pass filter should be adjusted accordingly
-    //   // ESC2_motor.PID_velocity.P = 0.005; // just trying something
-    //   // ESC2_motor.PID_velocity.I = 0.1; // just trying something
-    // #endif
+    0
   #endif
+  #if (ESC2_DEFINED) && defined(FOC_2_USE_HALL)
+    || (ESC1_motor.motor_status != FOCMotorStatus::motor_ready)
+  #endif
+  ) { // should be motor_ready, otherwise will be motor_calib_failed
+    TLB_log_e("FOC init (calib) failed! %x",ESC1_motor.motor_status); neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
+    errorHaltHandler();
+  }
+
+  // //// DEBUG: move to relevant section (in TLB_ESC?)
+  // #if (ESC1_DEFINED) && defined(FOC_1_USE_HALL)
+  //   ESC1_motor.LPF_velocity.Tf = 0.05; // hall sensors have a low resolution, so the velocity-measurement Low-Pass filter should be adjusted accordingly
+  //   // ESC1_motor.PID_velocity.P = 0.005; // just trying something
+  //   // ESC1_motor.PID_velocity.I = 0.1; // just trying something
+  // #endif
+  // #if (ESC2_DEFINED) && defined(FOC_2_USE_HALL)
+  //   ESC2_motor.LPF_velocity.Tf = 0.05; // hall sensors have a low resolution, so the velocity-measurement Low-Pass filter should be adjusted accordingly
+  //   // ESC2_motor.PID_velocity.P = 0.005; // just trying something
+  //   // ESC2_motor.PID_velocity.I = 0.1; // just trying something
+  // #endif
 
   //// if it made it here, all is OK, let's fucking go
   TLB_log_v("let's fucking go");
   neopixelWrite(RGB_BUILTIN, RGB_LED_OK);
 
-  // ESC1_motor.disable(); // untill i resolve the encoder issues
-  ESC2_motor.disable(); // while i resolve the encoder issues
+  //// 'disabling' the motor seems to instruct the MOSFETs to connect all phases to GND, effectively creating resistive braking on the motor (generating a ton of heat)
+  // ESC1_motor.freeWheel(); // freeWheel is a function i added, which does what i want 'disable' to do
+  // ESC2_motor.freeWheel(); // freeWheel is a function i added, which does what i want 'disable' to do
+
+  //// receiver stuff (move to better location?)
+  /*bool initSuccess = */
+  TLB_rx.begin(true); // init ESP-NOW receiver (incl. softAP)
+  TLB_rx.setSensor(0, VBAT_used_for_FOC*100);
 
   sinOffset = millis(); // make simple sinusoid input start at 0, instead of starting at high speed
 }
@@ -314,22 +310,96 @@ void setup() {
 /////////////////////////////////////////// main loop ///////////////////////////////////////////
 
 uint32_t debugPrintTimer;
-const uint32_t debugPrintInterval = 100; // (millis)
+const uint32_t debugPrintInterval = 500; // (millis)
+
+const float LPF_cur_Tf = 0.1; // Low-Pass Filter time constant for current sensors
+LowPassFilter LPF_cur_L_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit
+LowPassFilter LPF_cur_M1_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit
+LowPassFilter LPF_cur_M2_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit
+LowPassFilter LPF_VBAT_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit
+LowPassFilter LPF_speed_debug{LPF_cur_Tf}; // deleteme
 
 void loop() {
-  ESC2_motor.target = sin((millis()-sinOffset) / 3000.0f) * ESC2_driver.voltage_limit; // set motor torque in 'volt' (out of max_volt)
-  // ESC1_motor.target = max(min(ESC1_motor.target, ESC1_VOLTAGE_LIMIT), -ESC1_VOLTAGE_LIMIT); // not strictly needed, as power is constrained later as well
-  // ESC1_motor.target = max(min(ESC1_motor.target, 3.0f), -3.0f); // not strictly needed, as power is constrained later as well
+  // ESC1_motor.target = sin((millis()-sinOffset) / 3000.0f) * ESC1_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
+  // ESC2_motor.target = sin((millis()-sinOffset) / 3000.0f) * ESC2_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
 
-  simpleFOCupdate(); // run as often as possible
+  // uint32_t one = ESP.getCycleCount(); // the simpleFOCupdate (for both motors) appears to take about <100us, so that's not too terrible
+  simpleFOCupdate(); // run as often as possible 
   // ESC1_sensor.update();
+  // uint32_t two = ESP.getCycleCount();
+
+  // uint32_t one = ESP.getCycleCount(); // the current sensor LPF stuff below appears to take about ~330us, so that's not great
+  // float cur_L_now = LPF_cur_L_debug(mes_Lcurrent());
+  // float cur_M1_now = LPF_cur_M1_debug(mes_M1current());
+  // float cur_M2_now = LPF_cur_M2_debug(mes_M2current());
+  // uint32_t two = ESP.getCycleCount();
+
+  // float VBAT_now = LPF_VBAT_debug(mes_VBAT());
+
+  // uint32_t spd_now = LPF_speed_debug(two-one);
+
+  temp_sensor_read_celsius(&CPU_temperature);
+  if((CPU_temperature > CPU_temperature_limit) && CPU_temperature_good) { // if overheated
+    CPU_temperature_good = false; // avoid spam
+    TLB_log_w("CPU overtemp reached: %.2f", CPU_temperature);
+    neopixelWrite(RGB_BUILTIN, RGB_LED_WARNING);
+  } else if((!CPU_temperature_good) && (CPU_temperature < (CPU_temperature_limit-temperature_good_hyst))) { // once cooled down
+    CPU_temperature_good = true;
+    TLB_log_i("CPU overtemp restored");
+    neopixelWrite(RGB_BUILTIN, RGB_LED_OK); // TODO: check other factors
+  }
   
-  // // virtual link code (from video: https://youtu.be/xTlv1rPEqv4?si=aYMAJuWkvaOria6V&t=126)
-  ESC1_motor.shaft_angle = ESC1_motor.shaftAngle();  ESC2_motor.shaft_angle = ESC2_motor.shaftAngle(); // after my optimization, this has become necessary for the code below
-  const float linkPower = 5; // how strong the 'link' should be ('voltage' torque response proportional to angle difference (in radians))
-  ESC1_motor.move( linkPower*((-ESC2_motor.shaft_angle) - ESC1_motor.shaft_angle));
+  // virtual link code (from video: https://youtu.be/xTlv1rPEqv4?si=aYMAJuWkvaOria6V&t=126)
+  // ESC1_motor.shaft_angle = ESC1_motor.shaftAngle();  ESC2_motor.shaft_angle = ESC2_motor.shaftAngle(); // after my optimization, this has become necessary for the code below
+  // const float linkPower = 5; // how strong the 'link' should be ('voltage' torque response proportional to angle difference (in radians))
+  // ESC1_motor.move( linkPower*((-ESC2_motor.shaft_angle) - ESC1_motor.shaft_angle));
   // ESC2_motor.move( linkPower*((-ESC1_motor.shaft_angle) - ESC2_motor.shaft_angle));
 
+  static uint32_t lastTime = millis();
+  if(TLB_rx.unpaired() || ((millis()-lastTime)>radioSilenceTimeout)) {
+      if(ESC1_motor.enabled) { TLB_log_v("freewheeling"); simpleFOCstartFreeWheel(); neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_2); }
+      if(TLB_rx.update()) { lastTime = millis(); } // still need to run update function (to pair and such)
+  } else {
+    if(!ESC1_motor.enabled) { TLB_log_v("re-enabling"); simpleFOCstopFreeWheel(); neopixelWrite(RGB_BUILTIN, RGB_LED_OK); }
+    if(TLB_rx.update()) {
+      const float maxBrakingTorque = DEF_VOLTAGE_SENSOR_ALIGN;
+      const float maxForwardTorque = ESC_VOLTAGE_LIMIT;
+      uint32_t thisTime = millis();
+      int16_t newTargetRaw = TLB_rx.get(0);
+      float newTargetConverted = 0.0;
+      #ifdef LEGACY_TRANSMITTER
+        newTargetRaw -= 1000; // rtlopez/espnow-rclink library only deals in RC 880~2120 values
+        lastTime = thisTime;
+        if(newTargetRaw < 25) { // braking
+          newTargetConverted = newTargetRaw; // copy int to float
+          newTargetConverted -= 25.0f; // get negative number
+          newTargetConverted *= (maxBrakingTorque / (25.0f)); // scale
+        } else if(newTargetRaw < 56) { // idling
+          // if(ESC1_motor.enabled) { simpleFOCstartFreeWheel(); }
+          newTargetConverted = 0.0; // 0-torque is functional free-wheel
+        } else if(CPU_temperature_good) { // positive throttle
+          newTargetConverted = newTargetRaw - 55; // offset for zero-throttle
+          newTargetConverted *= (maxForwardTorque / ((255.0f)-(55.0f))); // scale
+        }// else { newTargetConverted = 0.0;}
+      #else
+        newTargetRaw -= 1500; // rtlopez/espnow-rclink library only deals in RC 880~2120 values
+        if(newTargetRaw < 0) { // braking
+          newTargetConverted = newTargetRaw; // copy int to float
+          newTargetConverted *= (maxBrakingTorque / (128.0f)); // scale
+        } else if(newTargetRaw == 0) { // idling
+          // if(ESC1_motor.enabled) { simpleFOCstartFreeWheel(); }
+          newTargetConverted = 0.0; // 0-torque is functional free-wheel
+        } else if(CPU_temperature_good) { // positive throttle
+          newTargetConverted = newTargetRaw; // copy int to float
+          newTargetConverted *= (maxForwardTorque / (127.0f)); // scale
+        }// else { newTargetConverted = 0.0;}
+      #endif
+      // TLB_log_v("received: %d->%.2f  %lu  %u", newTargetRaw, newTargetConverted, thisTime-lastTime, CPU_temperature_good);
+      lastTime = thisTime;
+      ESC1_motor.target = -newTargetConverted; // reverse input!
+      ESC2_motor.target = newTargetConverted;
+    }
+  }
 
   if((millis()-debugPrintTimer)>=debugPrintInterval) {
     debugPrintTimer = millis();
@@ -341,33 +411,9 @@ void loop() {
     // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_angle, ESC2_motor.shaft_angle);
     // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_angle, ESC1_motor.shaft_velocity);
     // debugSerial.printf("%.2f, %.2f\n", ESC2_motor.shaft_angle, ESC2_motor.shaft_velocity);
-    // debugSerial.printf("%.2f, %.2f\n", ESC2_motor.shaft_angle, ESC2_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH);
-    // debugSerial.printf("%.2f,  %.2f, %.2f\n", mes_Lcurrent(), mes_M1current(), mes_M2current());
-
-    // #if TLB_DEBUG_VARIANT == 1
-    //   // for(uint8_t i=0;i<debugSpeedTimerCount;i++) {if(debugSpeedTimerFlags[i]){debugSerial.printf("TBD speed %u %lu\n",i,debugSpeedTimers[i][1]-debugSpeedTimers[i][0]);}}
-    // #elif TLB_DEBUG_VARIANT == 2
-    //   // for(uint8_t i=0;i<debugSpeedTimerCount;i++) {if(debugSpeedTimerFlags[i]){debugSerial.printf("TBD speed %u %lu\n",i,debugSpeedTimers[i][1]-debugSpeedTimers[i][0]);}}
-    // #elif TLB_DEBUG_VARIANT == 3
-    //   // for(uint8_t i=0;i<debugSpeedTimerCount;i++) {if(debugSpeedTimerFlags[i]){debugSerial.printf("TBD speed %u %lu\n",i,debugSpeedTimers[i][1]-debugSpeedTimers[i][0]);}}
-    //   if(debugIntTimerFlags[0]) {debugSpeedTimerFlags[0]=0;debugSerial.printf("updateState speed %lu\n",debugSpeedTimers[0][1]-debugSpeedTimers[0][0]);}
-    //   if(debugIntTimerFlags[1]) {debugSpeedTimerFlags[1]=0;debugSerial.printf("update/noInterrupts speed %lu\n",debugSpeedTimers[1][1]-debugSpeedTimers[1][0]);}
-    // #endif
+    // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH, ESC2_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH);
+    // debugSerial.printf("cur %.2f,  %.2f, %.2f \t VBAT: %.2f\n", cur_L_now, cur_M1_now, cur_M2_now, VBAT_now);
+    // debugSerial.printf("spd: %lu\n", spd_now);
+    debugSerial.printf("CPU temp: %.2f\n",CPU_temperature);
   }
-
-  // #if TLB_DEBUG_VARIANT == 1
-  //   // for(uint8_t i=0;i<debugIntTimerCount;i++) {if(debugIntTimerFlags[i]){debugSerial.printf("TBD timer %u %lu\n",i,debugIntTimers[i]);}}
-  //   if(debugIntTimerFlags[0]) {debugIntTimerFlags[0]=0;debugSerial.printf("ISR timer %lu\n",debugIntTimers[0]);}
-  //   if(debugIntTimerFlags[1]) {debugIntTimerFlags[1]=0;debugSerial.printf("no state change %lu\n",debugIntTimers[1]);}
-  //   if(debugIntTimerFlags[2]) {debugIntTimerFlags[2]=0;debugSerial.printf("fast dir change %lu\n",debugIntTimers[2]);}
-  //   // if(debugIntTimerFlags[3]) {debugIntTimerFlags[3]=0;debugSerial.printf("TBD timer %lu\n",debugIntTimers[3]);}
-  // #elif TLB_DEBUG_VARIANT == 2
-  //   // for(uint8_t i=0;i<debugIntTimerCount;i++) {if(debugIntTimerFlags[i]){debugSerial.printf("TBD timer %u %lu\n",i,debugIntTimers[i]);}}
-  //   if(debugIntTimerFlags[0]) {debugIntTimerFlags[0]=0;debugSerial.printf("A ISR timer %lu\n",debugIntTimers[0]);}
-  //   if(debugIntTimerFlags[1]) {debugIntTimerFlags[1]=0;debugSerial.printf("B ISR timer %lu\n",debugIntTimers[1]);}
-  //   if(debugIntTimerFlags[2]) {debugIntTimerFlags[2]=0;debugSerial.printf("C ISR timer %lu\n",debugIntTimers[2]);}
-  //   if(debugIntTimerFlags[3]) {debugIntTimerFlags[3]=0;debugSerial.printf("no state change %lu\n",debugIntTimers[3]);}
-  // #elif TLB_DEBUG_VARIANT == 3
-  //   // for(uint8_t i=0;i<debugIntTimerCount;i++) {if(debugIntTimerFlags[i]){debugSerial.printf("TBD timer %u %lu\n",i,debugIntTimers[i]);}}
-  // #endif
 }

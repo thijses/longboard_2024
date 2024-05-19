@@ -5,6 +5,7 @@ dead_zone
 
 _configure6PWM
 */
+#pragma once
 
 /*#include "main.cpp"*/ // this header file requires some things to be defined in main.cpp first
 #include "TLB_pinouts.h" // the pinout should be included in main.cpp BEFORE this file is included
@@ -34,6 +35,9 @@ _configure6PWM
 #define SIMPLEFOC_PWM_HIGHSIDE_ACTIVE_HIGH true // explicitly specifiy the gate driver inputs logic level
 #define SIMPLEFOC_PWM_LOWSIDE_ACTIVE_HIGH true // explicitly specifiy the gate driver inputs logic level
 
+#define ESC1_DEFINED  (defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor))
+#define ESC2_DEFINED  (defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065))
+
 //// a handy preprocessor macro for debugging
 #define __PREPROSTRING(s) #s // converts 's' into a string (e.g. __PREPROSTRING(DEFINED_VALUE) -> "DEFINED_VALUE"). Use _PREPROSTRING() for a string of the CONTENTS of the defined value
 #define _PREPROSTRING(s) __PREPROSTRING(s) // converts 's' into a string (e.g. _PREPROSTRING(DEFINED_VALUE) -> {string-of-defined-value}). Use __PREPROSTRING() for a string of "DEFINED_VALUE"
@@ -45,7 +49,8 @@ _configure6PWM
 #define ESC_MODULATION_TYPE   FOCModulationType::Trapezoid_120 // trapezoidal 120 should work best with HALL sensors {SinePWM,SpaceVectorPWM,Trapezoid_120,Trapezoid_150}
 #define ESC_PWM_FREQ          20000 // (Hz) PWM freq used for motor control. Lower reduces switching power, higher improves consistancy and noise
 // #define ESC_VOLTAGE_LIMIT     24.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power
-#define ESC_VOLTAGE_LIMIT      6.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // DEBUG
+#define ESC_VOLTAGE_LIMIT     12.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // early testing
+// #define ESC_VOLTAGE_LIMIT      6.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // DEBUG
 #define ESC_SENSOR_ALIGN      DEF_VOLTAGE_SENSOR_ALIGN // (Volts) note: will get constrained to ESC_VOLTAGE_LIMIT
 #define ESC_VELOC_INDEX       DEF_INDEX_SEARCH_TARGET_VELOCITY // (radians/sec)
 //// the gate driver i'm using: FD6288Q  https://static.qingshow.net/fortiortech/file/1597746029372.pdf
@@ -53,7 +58,7 @@ _configure6PWM
 // #define ESC_DEADTIME_PERCENT   0.0f // (%) dead-time added by simpleFOC. On ESP32, this is a built-in feature of the MCPWM peripheral.
 //////////////////////////////////////// motor constants ////////////////////////////////////////
 //// see: https://docs.simplefoc.com/bldcmotor
-#if defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)
+#if ESC1_DEFINED
   #ifdef MOTOR1_HUB83MM
     //// a hub-motor i bought on Aliexpress, advertised as 400W, 2160rpm, 22A max, 24-36V, 0.557 Ohm, hall-sensors built-in
     //// https://www.aliexpress.com/item/32949667786.html?spm=a2g0o.order_list.order_list_main.94.471b1802dKUA8K
@@ -120,7 +125,7 @@ _configure6PWM
   #endif
 #endif // any MOTOR1_ defined
 
-#if defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)
+#if ESC2_DEFINED
   #ifdef MOTOR2_HUB83MM
     //// a hub-motor i bought on Aliexpress, advertised as 400W, 2160rpm, 22A max, 24-36V, 0.557 Ohm, hall-sensors built-in
     //// https://www.aliexpress.com/item/32949667786.html?spm=a2g0o.order_list.order_list_main.94.471b1802dKUA8K
@@ -168,51 +173,29 @@ _configure6PWM
 #endif // any MOTOR2_ defined
 //////////////////////////////////////// extra constants ////////////////////////////////////////
 //// hall sensors will discard 'outlier' datapoints, but what constitutes an outlier is somewhat objective
-#if defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)
+#if ESC1_DEFINED
   #ifdef FOC_1_USE_HALL // check not needed, just nice for humans
     #define ESC1_HALL_VELOC_ABS_MIN   200.0f // (radians/sec) even for the lowest-speed use-cases, a certain minimum is useful (also consider momentary shocks to the system)
-    #define ESC1_HALL_VELOC_ABS_MAX  1000.0f // (radians/sec) should be ~10,000 RPM, i'm not making a longboard at that speed my dude
+    #define ESC1_HALL_VELOC_ABS_MAX  ((float)(50.0f*TWO_PI)) // (radians/sec) 50RPS=3000RPM should be about fast enough
     #define ESC1_HALL_VELOC_MAX_MULT   10.0f // (multiplier for radians/sec) similar to sampling theory, the measurable speed should exceed the inteded max target speed
   #endif
 #endif // any MOTOR1_ defined
-#if defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)
+#if ESC2_DEFINED
   #ifdef FOC_2_USE_HALL // check not needed, just nice for humans
     #define ESC2_HALL_VELOC_ABS_MIN   200.0f // (radians/sec) even for the lowest-speed use-cases, a certain minimum is useful (also consider momentary shocks to the system)
-    #define ESC2_HALL_VELOC_ABS_MAX  1000.0f // (radians/sec) should be ~10,000 RPM, i'm not making a longboard at that speed my dude
+    #define ESC2_HALL_VELOC_ABS_MAX  ((float)(50.0f*TWO_PI)) // (radians/sec) 50RPS=3000RPM should be about fast enough
     #define ESC2_HALL_VELOC_MAX_MULT   10.0f // (multiplier for radians/sec) similar to sampling theory, the measurable speed should exceed the inteded max target speed
   #endif
 #endif // any MOTOR2_ defined
 
 ///////////////////////////////////////// setup sensors /////////////////////////////////////////
-#if defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)
+#if ESC1_DEFINED
   #ifdef FOC_1_USE_HALL
     //// https://docs.simplefoc.com/hall_sensors
     HallSensor ESC1_sensor = HallSensor(PIN_HALL_BEMF_1A,PIN_HALL_BEMF_1B,PIN_HALL_BEMF_1C, ESC1_POLE_PAIRS); // {pin_A,pin_B,pin_C, pole_pairs}
-    static void IRAM_ATTR ISR_HALL_1A(){
-      #if TLB_DEBUG_VARIANT == 1
-        TLB_DEBUG_TOGGLE(0);
-        TLB_DEBUG_TIME(0);
-      #elif TLB_DEBUG_VARIANT == 2
-        TLB_DEBUG_TOGGLE(0);
-        TLB_DEBUG_TIME(0);
-      #endif
-      ESC1_sensor.handleA();}  static void IRAM_ATTR ISR_HALL_1B(){
-        #if TLB_DEBUG_VARIANT == 1
-          TLB_DEBUG_TOGGLE(0);
-          TLB_DEBUG_TIME(0);
-        #elif TLB_DEBUG_VARIANT == 2
-          TLB_DEBUG_TOGGLE(1);
-          TLB_DEBUG_TIME(1);
-        #endif
-        ESC1_sensor.handleB();}  static void IRAM_ATTR ISR_HALL_1C(){
-          #if TLB_DEBUG_VARIANT == 1
-            TLB_DEBUG_TOGGLE(0);
-            TLB_DEBUG_TIME(0);
-          #elif TLB_DEBUG_VARIANT == 2
-            TLB_DEBUG_TOGGLE(2);
-            TLB_DEBUG_TIME(2);
-          #endif
-          ESC1_sensor.handleC();}
+    static void IRAM_ATTR ISR_HALL_1A(){ESC1_sensor.handleA();}
+    static void IRAM_ATTR ISR_HALL_1B(){ESC1_sensor.handleB();}
+    static void IRAM_ATTR ISR_HALL_1C(){ESC1_sensor.handleC();}
     void ESC1_initSensor() {
       ESC1_sensor.pullup = PCB_HALL_PULLUPS;
       ESC1_sensor.velocity_max = max(ESC1_HALL_VELOC_ABS_MIN, min(ESC1_VELOC_MAX * ESC1_HALL_VELOC_MAX_MULT, ESC1_HALL_VELOC_ABS_MAX)); // see definitions above
@@ -239,7 +222,7 @@ _configure6PWM
     #error("no sensor input defined for motor 1")
   #endif
 #endif // any MOTOR1_ defined
-#if defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)
+#if ESC2_DEFINED
   #ifdef FOC_2_USE_HALL
     //// https://docs.simplefoc.com/hall_sensors
     HallSensor ESC2_sensor = HallSensor(PIN_HALL_BEMF_2A,PIN_HALL_BEMF_2B,PIN_HALL_BEMF_2C, ESC2_POLE_PAIRS); // {pin_A,pin_B,pin_C, pole_pairs}
@@ -271,7 +254,7 @@ _configure6PWM
   #endif
 #endif // any MOTOR2_ defined
 ///////////////////////////////////////// setup drivers /////////////////////////////////////////
-#if defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)
+#if ESC1_DEFINED
   #ifndef ESC1_ENABLE
     #define ESC1_ENABLE NOT_SET // motor 1 driver enable pin not present in current design
   #endif
@@ -287,7 +270,7 @@ _configure6PWM
     return(ESC1_driver.init()); // driver init
   }
 #endif // any MOTOR1_ defined
-#if defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)
+#if ESC2_DEFINED
   #ifndef ESC2_ENABLE
     #define ESC2_ENABLE NOT_SET // motor 2 driver enable pin not present in current design
   #endif
@@ -309,7 +292,7 @@ _configure6PWM
 //void ESC1_initCurrent() {}
 ////current_sense.skip_align  = true; // default false
 //////////////////////////////////////// last FOC objects ///////////////////////////////////////
-#if defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)
+#if ESC1_DEFINED
   BLDCMotor ESC1_motor = BLDCMotor(ESC1_POLE_PAIRS,ESC1_PHASE_RESIST,ESC1_KV_RATING,ESC1_PHASE_INDUCT); // ...
   void ESC1_initMotor(float supplyVoltage) {
     ESC1_initSensor(); // init sensor
@@ -327,7 +310,7 @@ _configure6PWM
     //ESC1_motor.velocity_index_search = ESC_VELOC_INDEX; // index search velocity (radians/sec)
     ESC1_motor.velocity_limit = ESC1_VELOC_MAX; // velocity limit (radians/sec)
     ESC1_motor.sensor_offset = ESC1_SENSOR_OFFSET; // sensor absolute-zero offset (radians)
-    ESC1_driver.voltage_limit = ESC1_VOLTAGE_LIMIT; // 
+    ESC1_motor.voltage_limit = ESC1_driver.voltage_limit; // not sure why there are 2 seperate limits, but just sync them
     ESC1_motor.current_limit = ESC1_CURRENT_LIMIT;// "not set on the begining"?
     #ifdef MOTOR1_CALIBRATED_DIRECTION // if sensor direction calibration has already been done
       ESC1_motor.sensor_direction = MOTOR1_CALIBRATED_DIRECTION;
@@ -344,7 +327,7 @@ _configure6PWM
     //ESC1_initCurrent(); // init current sensor(s)
   }
 #endif // any MOTOR1_ defined
-#if defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)
+#if ESC2_DEFINED
   BLDCMotor ESC2_motor = BLDCMotor(ESC2_POLE_PAIRS,ESC2_PHASE_RESIST,ESC2_KV_RATING,ESC2_PHASE_INDUCT); // ...
   void ESC2_initMotor(float supplyVoltage) {
     ESC2_initSensor(); // init sensor
@@ -362,7 +345,7 @@ _configure6PWM
     //ESC2_motor.velocity_index_search = ESC_VELOC_INDEX; // index search velocity (radians/sec)
     ESC2_motor.velocity_limit = ESC2_VELOC_MAX; // velocity limit (radians/sec)
     ESC2_motor.sensor_offset = ESC2_SENSOR_OFFSET; // sensor absolute-zero offset (radians)
-    ESC2_driver.voltage_limit = ESC2_VOLTAGE_LIMIT; // 
+    ESC2_motor.voltage_limit = ESC2_driver.voltage_limit; // not sure why there are 2 seperate limits, but just sync them
     ESC2_motor.current_limit = ESC2_CURRENT_LIMIT;// "not set on the begining"?
     #ifdef MOTOR2_CALIBRATED_DIRECTION // if sensor direction calibration has already been done
       ESC2_motor.sensor_direction = MOTOR2_CALIBRATED_DIRECTION;
@@ -381,7 +364,7 @@ _configure6PWM
 #endif // any MOTOR2_ defined
 ////////////////////////////////////// GPIO initialization //////////////////////////////////////
 void simpleFOCinit(float supplyVoltage) { // init ESC pins
-  #if defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)
+  #if ESC1_DEFINED
     ESC1_initMotor(supplyVoltage);
   #else
     pinMode(ESC1_HIN1, OUTPUT); pinMode(ESC1_HIN2, OUTPUT); pinMode(ESC1_HIN3, OUTPUT);
@@ -389,7 +372,7 @@ void simpleFOCinit(float supplyVoltage) { // init ESC pins
     digitalWrite(ESC1_HIN1, LOW); digitalWrite(ESC1_HIN2, LOW); digitalWrite(ESC1_HIN3, LOW);
     digitalWrite(ESC1_LIN1, LOW); digitalWrite(ESC1_LIN2, LOW); digitalWrite(ESC1_LIN3, LOW);
   #endif
-  #if defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)
+  #if ESC2_DEFINED
     ESC2_initMotor(supplyVoltage);
   #else
     pinMode(ESC2_HIN1, OUTPUT); pinMode(ESC2_HIN2, OUTPUT); pinMode(ESC2_HIN3, OUTPUT);
@@ -399,29 +382,44 @@ void simpleFOCinit(float supplyVoltage) { // init ESC pins
   #endif
 }
 void simpleFOCstart() { // align encoder and start FOC
-  #if defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)
+  #if ESC1_DEFINED
     ESC1_motor.initFOC();
   #endif
-  #if defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)
+  #if ESC2_DEFINED
     ESC2_motor.initFOC();
   #endif
 }
-void simpleFOCupdate(float target1 = NOT_SET, float target2 = NOT_SET) { // FOC algorithm function. Run as often as possible
+/*IRAM_ATTR*/ void simpleFOCupdate(float target1 = NOT_SET, float target2 = NOT_SET) { // sensor update & FOC algorithm function. Run as often as possible
   //// NOTE: in torque mode, loopFOC() just does: {sensor->update(); electrical_angle=electricalAngle(); setPhaseVoltage(voltage.q, voltage.d, electrical_angle);}
   //// NOTE: in torque mode, .move() just updates voltage.q and voltage.d based on shaft_velocity (and voltage_bemf)
   ////        (also note: voltage.d (lag compensation if known inductance) is not used in FOCModulationType::Trapezoid_120)
   ////        (also note: current.q is estimated (despite no current sensor being present), but not used in TorqueControlType::voltage)
-  #if defined(MOTOR1_HUB83MM) || defined(MOTOR1_BRH5065) || defined(MOTOR1_debugMotor)
+  #if ESC1_DEFINED
     ESC1_motor.loopFOC();
     ESC1_motor.move(target1);
   #endif
-  #if defined(MOTOR2_HUB83MM) || defined(MOTOR2_BRH5065)
+  #if ESC2_DEFINED
     ESC2_motor.loopFOC();
     ESC2_motor.move(target2);
   #endif
 }
 
-
+void simpleFOCstartFreeWheel() { // start free-wheeling (return to normal using)
+  #if ESC1_DEFINED
+    ESC1_motor.freeWheel();
+  #endif
+  #if ESC2_DEFINED
+    ESC2_motor.freeWheel();
+  #endif
+}
+void simpleFOCstopFreeWheel() {
+  #if ESC1_DEFINED
+    ESC1_motor.enable();
+  #endif
+  #if ESC2_DEFINED
+    ESC2_motor.enable();
+  #endif
+}
 
 //// calculate how many many meters this system can travel before rolling over
 // #define MOTOR1_ROLLOVER_DISTANCE  (((float)(((1UL<<((sizeof(ESC1_sensor.electric_rotations)*8)-1))-1) / ESC1_POLE_PAIRS)) * MOTOR1_WHEELCIRCUM)

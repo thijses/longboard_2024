@@ -4,6 +4,7 @@ this file defines all the pins for each PCB revision
 
 NOTE: the RBG LED pin is defined in the custom pins_arduino.h header (see boards/variants)
 */
+#pragma once
 
 /*#include "main.cpp"*/ // this header file requires some things to be defined in main.cpp first
 

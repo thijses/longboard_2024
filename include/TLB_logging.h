@@ -6,6 +6,7 @@ TODO:
 - add a .ini file define which changes the level of logging. (maybe for release only errors?)
 
 */
+#pragma once
 
 /*#include "main.cpp"*/ // this header file requires some things to be defined in main.cpp first
 
