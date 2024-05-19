@@ -73,7 +73,7 @@ int8_t lithiumCellCalc(float VBAT_measurement) { // guesstimate how many (lithiu
 
   int8_t extendedRangeCandidate = -2;
   for(uint8_t i=1; i<=_lithiumCellCalcLimit; i++) {
-    float targets[3]; for(uint8_t j=0;j<3;j++){targets[j]=_lithiumCellThresholds[j]*i;} // inefficient/slow, but effective
+    float targets[4]; for(uint8_t j=0;j<3;j++){targets[j]=_lithiumCellThresholds[j]*i;} // inefficient/slow, but effective
     if((VBAT_measurement > targets[1]) && (VBAT_measurement < targets[2])) {
       return(i); // nice and normal situation
     } else if((VBAT_measurement > targets[0]) && (VBAT_measurement < targets[3])) { // extended battery voltage range

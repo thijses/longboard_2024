@@ -216,10 +216,12 @@ void setup() {
   initRGB_LED(); // setup RGB LED (for debug) (note: LED init is done early, for easier debug)
   TLB_log_v("LED init done");
   neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_1); // set a state (because the LED will maintain its status between resets)
+  debugSerial.setDebugOutput(true); // posts ESP (RTOS) debug here as well?
   #if(RELEASE_BUILD_CHECK) // if this is NOT a release build
-    debugSerial.setDebugOutput(true); // posts ESP (RTOS) debug here as well?
     // while(!debugSerial) { /*wait*/ } // doesn't wait for serial port to be OPENEND, BUT i believe it enabled re-uploading?!? (not sure why, but uploading can fail without this check)
-    delay(3000); // patch, because USBCDC can't be bothered to wait
+    // delay(3000); // patch, because USBCDC can't be bothered to wait
+  #else
+    delay(25); // to be improved, but it seems prudent to give the seperate systems a little time to boot
   #endif
   TLB_log_d("boot %s %s", __DATE__, __TIME__); // even in release build, print something to me know the ESP is alive (and which code it's running)
 
@@ -303,7 +305,7 @@ void setup() {
   TLB_rx.begin(true); // init ESP-NOW receiver (incl. softAP)
   TLB_rx.setSensor(0, VBAT_used_for_FOC*100);
 
-  sinOffset = millis(); // make simple sinusoid input start at 0, instead of starting at high speed
+  // sinOffset = millis(); // make simple sinusoid input start at 0, instead of starting at high speed
 }
 
 
@@ -401,19 +403,21 @@ void loop() {
     }
   }
 
-  if((millis()-debugPrintTimer)>=debugPrintInterval) {
-    debugPrintTimer = millis();
+  #if RELEASE_BUILD_CHECK
+    if((millis()-debugPrintTimer)>=debugPrintInterval) {
+      debugPrintTimer = millis();
 
-    // ESC1_motor.monitor();
-    // debugSerial.println(ESC1_sensor.getAngle());
-    // debugSerial.println(ESC1_motor.shaft_velocity,6);
-    // debugSerial.println(ESC1_motor.target);
-    // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_angle, ESC2_motor.shaft_angle);
-    // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_angle, ESC1_motor.shaft_velocity);
-    // debugSerial.printf("%.2f, %.2f\n", ESC2_motor.shaft_angle, ESC2_motor.shaft_velocity);
-    // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH, ESC2_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH);
-    // debugSerial.printf("cur %.2f,  %.2f, %.2f \t VBAT: %.2f\n", cur_L_now, cur_M1_now, cur_M2_now, VBAT_now);
-    // debugSerial.printf("spd: %lu\n", spd_now);
-    debugSerial.printf("CPU temp: %.2f\n",CPU_temperature);
-  }
+      // ESC1_motor.monitor();
+      // debugSerial.println(ESC1_sensor.getAngle());
+      // debugSerial.println(ESC1_motor.shaft_velocity,6);
+      // debugSerial.println(ESC1_motor.target);
+      // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_angle, ESC2_motor.shaft_angle);
+      // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_angle, ESC1_motor.shaft_velocity);
+      // debugSerial.printf("%.2f, %.2f\n", ESC2_motor.shaft_angle, ESC2_motor.shaft_velocity);
+      // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH, ESC2_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH);
+      // debugSerial.printf("cur %.2f,  %.2f, %.2f \t VBAT: %.2f\n", cur_L_now, cur_M1_now, cur_M2_now, VBAT_now);
+      // debugSerial.printf("spd: %lu\n", spd_now);
+      // debugSerial.printf("CPU temp: %.2f\n",CPU_temperature);
+    }
+  #endif
 }

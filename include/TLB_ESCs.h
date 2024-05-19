@@ -302,7 +302,9 @@ _configure6PWM
     //// TODO: check ESC1_driver.initialized ? (same as initSuccess)
     ESC1_motor.linkDriver(&ESC1_driver); // link the motor to the driver
     //ESC1_motor.linkCurrentSense(&ESC1_current); // link the motor to current sense
-    ESC1_motor.useMonitoring(debugSerial); // debug!
+    #if RELEASE_BUILD_CHECK
+      ESC1_motor.useMonitoring(debugSerial); // debug!
+    #endif
     ESC1_motor.controller = ESC_CONTROL_TYPE; // set control loop type to be used
     ESC1_motor.torque_controller = ESC_TORQUE_TYPE; // set torque control type. Without current sensors, only TorqueControlType::voltage is available
     ESC1_motor.foc_modulation = ESC_MODULATION_TYPE; // set FOC modulation type
