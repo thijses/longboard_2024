@@ -62,7 +62,7 @@ float mes_M2current() {
 
 
 //// some constants for interpreting battery voltages
-const float _lithiumCellThresholds[4] = {3.25,3.65,4.25,4.45}; // (Volts) regular voltage thresholds for lithium cells
+const float _lithiumCellThresholds[4] = {3.25,3.45,4.25,4.45}; // (Volts) regular voltage thresholds for lithium cells
 // const float _lithiumCellCalcLimit = 60.0f; // (Volts) don't bother counting cells beyond this voltage
 const uint8_t _lithiumCellCalcLimit = 60.0f/_lithiumCellThresholds[1]; // (#ofCells) don't bother counting cells beyond this voltage
 
@@ -93,4 +93,11 @@ int8_t lithiumCellCalc(float VBAT_measurement) { // guesstimate how many (lithiu
     TLB_log_w("battery voltage only in extended range! %.2f (%uS)",VBAT_measurement,extendedRangeCandidate); // warning (disabled in release-compile)
     return(extendedRangeCandidate);
   } /*else*/ return(-3); // it should never make it to this point, so if it does, just panic
+}
+
+bool setDynamicVBATbounds(float _dynamic_VBAT_bounds[4], int8_t _cellCount) { // initialize dynamic_VBAT_bounds based on cellCount
+  if(_cellCount <= 0) { return(false); } // error
+  //// TODO: VBAT can drop pretty low during high-current-draw moments. It's imperative that battery safety be maintained, though
+  for(uint8_t i=0;i<4;i++) { _dynamic_VBAT_bounds[i]=_lithiumCellThresholds[i]*((float)_cellCount); } // multiply 'vector' by scalar
+  return(true);
 }

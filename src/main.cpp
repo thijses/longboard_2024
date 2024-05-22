@@ -74,6 +74,7 @@ encoder issues debugging:
 const float speedLimit = 25.0/3.6; // (meters/sec) speed limit of longboard
 const float CPU_temperature_limit = 85.0f; // (deg Celsius) software temperature limit (starts ESCs free-wheeling)
 const uint32_t radioSilenceTimeout = 2000; // (millis) if radio has been silent for this long, start free-wheeling
+const bool forwardDirection = true; // a boolean used to flip forward direction. Personally, i prefer front-wheel drive, and i recently flipped the ESC around.
 
 #ifdef ARDUINO_USB_CDC_ON_BOOT
   #define debugSerial  Serial // use ESP32-S3's native USB JTAG+serial for debug output
@@ -116,10 +117,26 @@ const float check_M_cur_bounds_ext[2] = {-2.0, 25.0}; // (Amps) VBAT_M# current 
 int8_t cellCount; // gets initialized in setup()
 // const uint8_t minimumCellCount = ceil(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[0]); // battery can NEVER drop below absolute minimum cell voltage
 const uint8_t minimumCellCount = floor(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[1]); // fuck it, let the user decide when to fall of their board
+float dynamic_VBAT_bounds[4] = {-1.0}; // (Volt) VBAT bounds set on boot, based on estimated battery cell count and _lithiumCellThresholds[]
+bool batteryWarningDone = false; // to avoid spam, only send/log/announce a battery warning once (untill reset)
+bool batteryErrorDone = false; // once the battery drops to dangerous voltages, stop all powered-control (and start free-wheeling). Also only log once
 
 float CPU_temperature = 20.0;
 const float temperature_good_hyst = 5.0; // after an over-temperature event, the temperature needs to drop at least this much to be considered 'good' again
 volatile bool CPU_temperature_good=true;
+
+uint32_t loopStartTime; // (millis) record when setup() finished and loop() started
+
+const float LPF_cur_Tf = 0.1; // Low-Pass Filter time constant for current sensors
+LowPassFilter LPF_cur_L_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit?
+LowPassFilter LPF_cur_M1_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit?
+LowPassFilter LPF_cur_M2_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit?
+const float LPF_VBAT_Tf = 0.5; // Low-Pass Filter time constant for current sensors
+LowPassFilter LPF_VBAT_debug{LPF_VBAT_Tf}; // TODO: relpace with efficient FIFO or some shit?
+const float LPF_speed_Tf = 0.05; // Low-Pass Filter time constant for current sensors
+LowPassFilter LPF_speed_debug{LPF_speed_Tf}; // deleteme
+
+const uint32_t batteryCheckStartTime = (LPF_VBAT_Tf * 1000.0) * 2; // only start checking battery voltage after this amount of time has passed (after loopStartTime!)
 
 ///////////////////////////////////////// RGB LED colors ////////////////////////////////////////
 //// these defines are used in neopixelWrite(pin,r,g,b) like (pin,defined), where 'defined' contains the last 2 commas
@@ -209,8 +226,6 @@ void errorHaltHandler() {
 
 /////////////////////////////////////////// main setup //////////////////////////////////////////
 
-uint32_t sinOffset;
-
 void setup() {
   debugSerial.begin(115200);
   initRGB_LED(); // setup RGB LED (for debug) (note: LED init is done early, for easier debug)
@@ -241,6 +256,11 @@ void setup() {
   TLB_log_i("VBAT used for FOC: %.2f",VBAT_used_for_FOC);
   cellCount = lithiumCellCalc(VBAT_used_for_FOC);
   TLB_log_i("cell count: %d",cellCount);
+  if(!setDynamicVBATbounds(dynamic_VBAT_bounds, cellCount)) { // usually succeeds, but may fail during power-supply debugging
+    dynamic_VBAT_bounds[0]=check_VBAT_bounds_ext[0];  dynamic_VBAT_bounds[1]=check_VBAT_bounds[0];
+    dynamic_VBAT_bounds[2]=check_VBAT_bounds[1];  dynamic_VBAT_bounds[3]=check_VBAT_bounds_ext[1];
+  }
+  TLB_log_i("dynamic VBAT bounds: %.2f~%.2f <-> %.2f~%.2f",dynamic_VBAT_bounds[0],dynamic_VBAT_bounds[1],dynamic_VBAT_bounds[2],dynamic_VBAT_bounds[3]);
   // if(cellCount >= minimumCellCount) { VBAT_used_for_FOC = cellCount * _lithiumCellThresholds[2]; } // set limits to typical fully charged cell voltage
   simpleFOCinit(VBAT_used_for_FOC); // init ESC pins and whatnot (multicore note: motor_status will be motor_initializing)
   if(ESC1_motor.motor_status != FOCMotorStatus::motor_uncalibrated) { // should be motor_uncalibrated, otherwise will be motor_init_failed
@@ -305,7 +325,7 @@ void setup() {
   TLB_rx.begin(true); // init ESP-NOW receiver (incl. softAP)
   TLB_rx.setSensor(0, VBAT_used_for_FOC*100);
 
-  // sinOffset = millis(); // make simple sinusoid input start at 0, instead of starting at high speed
+  loopStartTime = millis(); // make simple sinusoid input start at 0, instead of starting at high speed
 }
 
 
@@ -314,31 +334,37 @@ void setup() {
 uint32_t debugPrintTimer;
 const uint32_t debugPrintInterval = 500; // (millis)
 
-const float LPF_cur_Tf = 0.1; // Low-Pass Filter time constant for current sensors
-LowPassFilter LPF_cur_L_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit
-LowPassFilter LPF_cur_M1_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit
-LowPassFilter LPF_cur_M2_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit
-LowPassFilter LPF_VBAT_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit
-LowPassFilter LPF_speed_debug{LPF_cur_Tf}; // deleteme
-
 void loop() {
-  // ESC1_motor.target = sin((millis()-sinOffset) / 3000.0f) * ESC1_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
-  // ESC2_motor.target = sin((millis()-sinOffset) / 3000.0f) * ESC2_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
+  // ESC1_motor.target = sin((millis()-loopStartTime) / 3000.0f) * ESC1_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
+  // ESC2_motor.target = sin((millis()-loopStartTime) / 3000.0f) * ESC2_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
 
-  // uint32_t one = ESP.getCycleCount(); // the simpleFOCupdate (for both motors) appears to take about <100us, so that's not too terrible
+  //// uint32_t one = ESP.getCycleCount(); // the simpleFOCupdate (for both motors) appears to take about <100us, so that's not too terrible
   simpleFOCupdate(); // run as often as possible 
   // ESC1_sensor.update();
-  // uint32_t two = ESP.getCycleCount();
+  //// uint32_t two = ESP.getCycleCount();
 
-  // uint32_t one = ESP.getCycleCount(); // the current sensor LPF stuff below appears to take about ~330us, so that's not great
+  //// uint32_t one = ESP.getCycleCount(); // the current sensor LPF stuff below appears to take about ~330us, so that's not great
   // float cur_L_now = LPF_cur_L_debug(mes_Lcurrent());
   // float cur_M1_now = LPF_cur_M1_debug(mes_M1current());
   // float cur_M2_now = LPF_cur_M2_debug(mes_M2current());
-  // uint32_t two = ESP.getCycleCount();
+  //// TODO: check for overcurrent? check_M_cur_bounds and check_M_cur_bounds_ext
 
-  // float VBAT_now = LPF_VBAT_debug(mes_VBAT());
+  //// uint32_t two = ESP.getCycleCount();
 
-  // uint32_t spd_now = LPF_speed_debug(two-one);
+  float VBAT_now = LPF_VBAT_debug(mes_VBAT());
+  if((millis() - loopStartTime) > batteryCheckStartTime) {
+    if((!batteryWarningDone) && ((VBAT_now < dynamic_VBAT_bounds[1]) || (VBAT_now > dynamic_VBAT_bounds[2]))) {
+      TLB_log_w("VBAT getting getting extreme: %.2f", VBAT_now);
+      neopixelWrite(RGB_BUILTIN, RGB_LED_WARNING); // will remain in warning-mode untill something changes it
+      //// TODO: limit max power?
+    } else if((!batteryErrorDone) && ((VBAT_now < dynamic_VBAT_bounds[0]) || (VBAT_now > dynamic_VBAT_bounds[3]))) {
+      TLB_log_e("VBAT out of bounds!: %.2f", VBAT_now);
+      neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR); // 
+      simpleFOCstartFreeWheel();
+    }
+  }
+
+  //// uint32_t spd_now = LPF_speed_debug(two-one);
 
   temp_sensor_read_celsius(&CPU_temperature);
   if((CPU_temperature > CPU_temperature_limit) && CPU_temperature_good) { // if overheated
@@ -362,16 +388,19 @@ void loop() {
       if(ESC1_motor.enabled) { TLB_log_v("freewheeling"); simpleFOCstartFreeWheel(); neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_2); }
       if(TLB_rx.update()) { lastTime = millis(); } // still need to run update function (to pair and such)
   } else {
-    if(!ESC1_motor.enabled) { TLB_log_v("re-enabling"); simpleFOCstopFreeWheel(); neopixelWrite(RGB_BUILTIN, RGB_LED_OK); }
+    if((!ESC1_motor.enabled) && (!batteryErrorDone)) { TLB_log_v("re-enabling"); simpleFOCstopFreeWheel(); neopixelWrite(RGB_BUILTIN, RGB_LED_OK); }
     if(TLB_rx.update()) {
-      const float maxForwardTorque = ESC_VOLTAGE_LIMIT * 0.75;
-      const float maxBrakingTorque = ESC_VOLTAGE_LIMIT; // strong braking (to be tampered by reducing it as speed reduces)
+      // TODO: abstract ESC1_motor away for these constants
+      const float maxForwardTorque = ESC1_motor.voltage_limit * 0.75;
+      const float maxBrakingTorque = ESC1_motor.voltage_limit; // strong braking (to be tampered by reducing it as speed reduces)
       const float brakingDecreseThresh = 5.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // once speed drops below this (final number in radians/sec), reduce braking
       const float _brakingDecreseThreshInverted = 1.0f/brakingDecreseThresh; // efficiency trick
       uint32_t thisTime = millis();
       int16_t newTargetRaw = TLB_rx.get(0);
       float newTargetConverted = 0.0;
-      float currentSpeed = ((-ESC1_motor.shaft_velocity)+ESC2_motor.shaft_velocity)*0.5f;
+      float currentSpeed = ((forwardDirection ? ESC1_motor.shaft_velocity : (-ESC1_motor.shaft_velocity))
+                            +(forwardDirection ? (-ESC2_motor.shaft_velocity) : ESC2_motor.shaft_velocity) // reverse velocity
+                            )*0.5f;
       #ifdef LEGACY_TRANSMITTER
         newTargetRaw -= 1000; // rtlopez/espnow-rclink library only deals in RC 880~2120 values
         lastTime = thisTime;
@@ -407,8 +436,8 @@ void loop() {
       #endif
       // TLB_log_v("received: %d->%.2f  %lu  %u", newTargetRaw, newTargetConverted, thisTime-lastTime, CPU_temperature_good);
       lastTime = thisTime;
-      ESC1_motor.target = -newTargetConverted; // reverse input!
-      ESC2_motor.target = newTargetConverted;
+      ESC1_motor.target = (forwardDirection ? newTargetConverted : (-newTargetConverted));
+      ESC2_motor.target = (forwardDirection ? (-newTargetConverted) : newTargetConverted); // reverse input!
     }
   }
 
