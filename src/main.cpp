@@ -76,7 +76,9 @@ const float CPU_temperature_limit = 85.0f; // (deg Celsius) software temperature
 const uint32_t radioSilenceTimeout = 2000; // (millis) if radio has been silent for this long, start free-wheeling
 const bool forwardDirection = true; // a boolean used to flip forward direction. Personally, i prefer front-wheel drive, and i recently flipped the ESC around.
 
-#ifdef ARDUINO_USB_CDC_ON_BOOT
+const bool FOC_core = ARDUINO_RUNNING_CORE; // which core to run FOC stuff on (see also: ARDUINO_RUNNING_CORE and ARDUINO_EVENT_RUNNING_CORE)
+
+#if ARDUINO_USB_CDC_ON_BOOT
   #define debugSerial  Serial // use ESP32-S3's native USB JTAG+serial for debug output
   //#define HWserial0 Serial0
 #else
@@ -96,6 +98,13 @@ const bool forwardDirection = true; // a boolean used to flip forward direction.
 #include "TLB_ESCs.h" // ESC stuff got too long, so i put it in a header file
 #include "TLB_comm.h"
 
+//// TODO: abstract ESC1 away for these constants
+const float maxForwardTorqueScalar = 1.0;
+const float maxBrakingTorqueScalar = 0.75; // strong braking (to be softened by reducing it as speed reduces)
+const float brakingDecreseThresh = 5.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // once speed drops below this (final number in radians/sec), reduce braking
+const float _brakingDecreseThreshInverted = 1.0f/brakingDecreseThresh; // efficiency trick
+//// TODO: bell-curve (sinusoidal/hyperbolic) braking (weak when going fast, weak when standing still, strong in the middle)
+
 ///////////////////////////////////////// ADC constants /////////////////////////////////////////
 const float check_3V3_bounds[2] = {3.2, 3.4}; // (Volt) 3V3 measurements should fall within these bounds
 const float check_5V_bounds[2] = {4.9, 5.3}; // (Volt) 5V measurements should fall within these bounds
@@ -114,6 +123,7 @@ const float check_M_cur_bounds_ext[2] = {-2.0, 25.0}; // (Amps) VBAT_M# current 
 
 #include "TLB_analog.h" // ADC stuff got too long, so i put it in a header file
 
+float VBAT_used_for_FOC = -1.0;
 int8_t cellCount; // gets initialized in setup()
 // const uint8_t minimumCellCount = ceil(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[0]); // battery can NEVER drop below absolute minimum cell voltage
 const uint8_t minimumCellCount = floor(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[1]); // fuck it, let the user decide when to fall of their board
@@ -137,6 +147,9 @@ const float LPF_speed_Tf = 0.05; // Low-Pass Filter time constant for current se
 LowPassFilter LPF_speed_debug{LPF_speed_Tf}; // deleteme
 
 const uint32_t batteryCheckStartTime = (LPF_VBAT_Tf * 1000.0) * 2; // only start checking battery voltage after this amount of time has passed (after loopStartTime!)
+
+uint32_t debugPrintTimer;
+const uint32_t debugPrintInterval = 500; // (millis)
 
 ///////////////////////////////////////// RGB LED colors ////////////////////////////////////////
 //// these defines are used in neopixelWrite(pin,r,g,b) like (pin,defined), where 'defined' contains the last 2 commas
@@ -202,9 +215,10 @@ bool initEXT_PERIPHpins() { // these pins can also be used for debugging
   return(true);
 }
 
-bool initRGB_LED() {
+bool initRGB_LED(uint8_t red_val=0, uint8_t green_val=0, uint8_t blue_val=0) {
   pinMode(LED_BUILTIN, OUTPUT); /*digitalWrite(LED_BUILTIN, LOW);*/
-  neopixelWrite(RGB_BUILTIN, RGB_LED_OFF); // set a state (because the LED will maintain its status between resets)
+  neopixelWrite(RGB_BUILTIN, red_val,green_val,blue_val); // set a state (because the LED will maintain its status between resets)
+  delayMicroseconds(400); // latch the data
   return(true); // TOOD: return something helpful
 }
 
@@ -224,44 +238,54 @@ void errorHaltHandler() {
   }
 }
 
-/////////////////////////////////////////// main setup //////////////////////////////////////////
+/////////////////////////////////////////// multi-core /////////////////////////////////////////
+volatile float currentSpeedMultiCore; // (radians/sec) current speed is passed between cores (from FOC core to other core)
+volatile float newTargetUnscaledMultiCore; // updated motor target is passed between cores (from other core to FOC core)
+volatile bool newTargetUnscaledMultiCore_flag=false; // very minor optimization, to avoid checking/using newTargetUnscaledMultiCore every loop
+volatile bool coreFOCsetup_flag=false;
+volatile bool freewheelMultiCore = false; // whether freewheeling should be enabled
 
-void setup() {
-  debugSerial.begin(115200);
-  initRGB_LED(); // setup RGB LED (for debug) (note: LED init is done early, for easier debug)
-  TLB_log_v("LED init done");
-  neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_1); // set a state (because the LED will maintain its status between resets)
-  debugSerial.setDebugOutput(true); // posts ESP (RTOS) debug here as well?
-  #if(RELEASE_BUILD_CHECK) // if this is NOT a release build
-    // while(!debugSerial) { /*wait*/ } // doesn't wait for serial port to be OPENEND, BUT i believe it enabled re-uploading?!? (not sure why, but uploading can fail without this check)
-    // delay(3000); // patch, because USBCDC can't be bothered to wait
-  #else
-    delay(25); // to be improved, but it seems prudent to give the seperate systems a little time to boot
-  #endif
-  TLB_log_d("boot %s %s", __DATE__, __TIME__); // even in release build, print something to me know the ESP is alive (and which code it's running)
+const uint32_t coreFOCspeedUpdateInterval = 20; // time between currentSpeedMultiCore updates. Should match/exceed transmitter update freq
+uint32_t coreFOCspeedUpdateTimer;
 
-  initEXT_PERIPHpins();
-  TLB_log_v("EXT_PERIPH init done");
-
-  initPSUs(); // setup step-down converter pins
-  TLB_log_v("PSU init done");
-  delay(10); // idk, why not
-  initADCpins(); // setup ADC pins
-  TLB_log_v("ADC init done");
-
-  initTempSensor();  temp_sensor_read_celsius(&CPU_temperature);
-  // TLB_log_v("temp sensor init done");
+void coreFOCloop() { // the code that loops the core that handles the FOC stuff
+  //// debug:
+  // ESC1_motor.target = sin((millis()-loopStartTime) / 3000.0f) * ESC1_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
+  // ESC2_motor.target = sin((millis()-loopStartTime) / 3000.0f) * ESC2_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
   
-  float VBAT_used_for_FOC = mes_VBAT();
-  TLB_log_i("VBAT used for FOC: %.2f",VBAT_used_for_FOC);
-  cellCount = lithiumCellCalc(VBAT_used_for_FOC);
-  TLB_log_i("cell count: %d",cellCount);
-  if(!setDynamicVBATbounds(dynamic_VBAT_bounds, cellCount)) { // usually succeeds, but may fail during power-supply debugging
-    dynamic_VBAT_bounds[0]=check_VBAT_bounds_ext[0];  dynamic_VBAT_bounds[1]=check_VBAT_bounds[0];
-    dynamic_VBAT_bounds[2]=check_VBAT_bounds[1];  dynamic_VBAT_bounds[3]=check_VBAT_bounds_ext[1];
+  //// virtual link code (from video: https://youtu.be/xTlv1rPEqv4?si=aYMAJuWkvaOria6V&t=126)
+  // ESC1_motor.shaft_angle = ESC1_motor.shaftAngle();  ESC2_motor.shaft_angle = ESC2_motor.shaftAngle(); // after my optimization, this has become necessary for the code below
+  // const float linkPower = 5; // how strong the 'link' should be ('voltage' torque response proportional to angle difference (in radians))
+  // ESC1_motor.move( linkPower*((-ESC2_motor.shaft_angle) - ESC1_motor.shaft_angle));
+  // ESC2_motor.move( linkPower*((-ESC1_motor.shaft_angle) - ESC2_motor.shaft_angle));
+
+  //// uint32_t one = ESP.getCycleCount(); // the simpleFOCupdate (for both motors) appears to take about <100us, so that's not too terrible
+  simpleFOCupdate(); // run as often as possible 
+  // ESC1_sensor.update();
+  //// uint32_t two = ESP.getCycleCount();
+
+  if(ESC1_motor.enabled && freewheelMultiCore) { simpleFOCstartFreeWheel(); }
+  else if((!ESC1_motor.enabled) && (!freewheelMultiCore)) { simpleFOCstopFreeWheel(); }
+  
+  if((millis()-coreFOCspeedUpdateTimer) >= coreFOCspeedUpdateInterval) { // pass speed value back to main core
+    coreFOCspeedUpdateTimer = millis();
+    float currentSpeed = ((forwardDirection ? ESC1_motor.shaft_velocity : (-ESC1_motor.shaft_velocity))
+                          +(forwardDirection ? (-ESC2_motor.shaft_velocity) : ESC2_motor.shaft_velocity) // reverse velocity
+                          )*0.5f;
+    currentSpeedMultiCore = currentSpeed;
   }
-  TLB_log_i("dynamic VBAT bounds: %.2f~%.2f <-> %.2f~%.2f",dynamic_VBAT_bounds[0],dynamic_VBAT_bounds[1],dynamic_VBAT_bounds[2],dynamic_VBAT_bounds[3]);
-  // if(cellCount >= minimumCellCount) { VBAT_used_for_FOC = cellCount * _lithiumCellThresholds[2]; } // set limits to typical fully charged cell voltage
+
+  if(newTargetUnscaledMultiCore_flag) {
+    float newTarget = newTargetUnscaledMultiCore; // NOTE: still (-1.0 to 1.0) scalar
+    newTargetUnscaledMultiCore_flag = false; // clearing this flag after newTargetUnscaledMultiCore is used is fancy, but currently unused
+    newTarget *= ESC1_motor.voltage_limit; // scale to 'voltage'
+    ESC1_motor.target = (forwardDirection ? newTarget : (-newTarget));
+    ESC2_motor.target = (forwardDirection ? (-newTarget) : newTarget); // reverse input!
+  }
+}
+
+void coreFOCsetup(void* arg) { // the 'task' that is started on the second core (core 0)
+
   simpleFOCinit(VBAT_used_for_FOC); // init ESC pins and whatnot (multicore note: motor_status will be motor_initializing)
   if(ESC1_motor.motor_status != FOCMotorStatus::motor_uncalibrated) { // should be motor_uncalibrated, otherwise will be motor_init_failed
     TLB_log_e("FOC init (pins) failed! %x",ESC1_motor.motor_status); neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR);
@@ -312,37 +336,18 @@ void setup() {
   //   // ESC2_motor.PID_velocity.I = 0.1; // just trying something
   // #endif
 
-  //// if it made it here, all is OK, let's fucking go
-  TLB_log_v("let's fucking go");
-  neopixelWrite(RGB_BUILTIN, RGB_LED_OK);
-
   //// 'disabling' the motor seems to instruct the MOSFETs to connect all phases to GND, effectively creating resistive braking on the motor (generating a ton of heat)
   // ESC1_motor.freeWheel(); // freeWheel is a function i added, which does what i want 'disable' to do
   // ESC2_motor.freeWheel(); // freeWheel is a function i added, which does what i want 'disable' to do
 
-  //// receiver stuff (move to better location?)
-  /*bool initSuccess = */
-  TLB_rx.begin(true); // init ESP-NOW receiver (incl. softAP)
-  TLB_rx.setSensor(0, VBAT_used_for_FOC*100);
+  coreFOCsetup_flag = true; // inform other core
 
-  loopStartTime = millis(); // make simple sinusoid input start at 0, instead of starting at high speed
+  while(1) { coreFOCloop(); } // finally, loop forever
 }
 
+TaskHandle_t core0task; // (global) task handler
 
-/////////////////////////////////////////// main loop ///////////////////////////////////////////
-
-uint32_t debugPrintTimer;
-const uint32_t debugPrintInterval = 500; // (millis)
-
-void loop() {
-  // ESC1_motor.target = sin((millis()-loopStartTime) / 3000.0f) * ESC1_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
-  // ESC2_motor.target = sin((millis()-loopStartTime) / 3000.0f) * ESC2_motor.voltage_limit; // set motor torque in 'volt' (out of max_volt)
-
-  //// uint32_t one = ESP.getCycleCount(); // the simpleFOCupdate (for both motors) appears to take about <100us, so that's not too terrible
-  simpleFOCupdate(); // run as often as possible 
-  // ESC1_sensor.update();
-  //// uint32_t two = ESP.getCycleCount();
-
+void coreOtherLoop() {
   //// uint32_t one = ESP.getCycleCount(); // the current sensor LPF stuff below appears to take about ~330us, so that's not great
   // float cur_L_now = LPF_cur_L_debug(mes_Lcurrent());
   // float cur_M1_now = LPF_cur_M1_debug(mes_M1current());
@@ -354,13 +359,15 @@ void loop() {
   float VBAT_now = LPF_VBAT_debug(mes_VBAT());
   if((millis() - loopStartTime) > batteryCheckStartTime) {
     if((!batteryWarningDone) && ((VBAT_now < dynamic_VBAT_bounds[1]) || (VBAT_now > dynamic_VBAT_bounds[2]))) {
+      batteryWarningDone = true; // avoid spam
       TLB_log_w("VBAT getting getting extreme: %.2f", VBAT_now);
       neopixelWrite(RGB_BUILTIN, RGB_LED_WARNING); // will remain in warning-mode untill something changes it
       //// TODO: limit max power?
     } else if((!batteryErrorDone) && ((VBAT_now < dynamic_VBAT_bounds[0]) || (VBAT_now > dynamic_VBAT_bounds[3]))) {
+      batteryErrorDone = true; // avoid spam
       TLB_log_e("VBAT out of bounds!: %.2f", VBAT_now);
       neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR); // 
-      simpleFOCstartFreeWheel();
+      freewheelMultiCore = true;
     }
   }
 
@@ -376,31 +383,18 @@ void loop() {
     TLB_log_i("CPU overtemp restored");
     neopixelWrite(RGB_BUILTIN, RGB_LED_OK); // TODO: check other factors
   }
-  
-  // virtual link code (from video: https://youtu.be/xTlv1rPEqv4?si=aYMAJuWkvaOria6V&t=126)
-  // ESC1_motor.shaft_angle = ESC1_motor.shaftAngle();  ESC2_motor.shaft_angle = ESC2_motor.shaftAngle(); // after my optimization, this has become necessary for the code below
-  // const float linkPower = 5; // how strong the 'link' should be ('voltage' torque response proportional to angle difference (in radians))
-  // ESC1_motor.move( linkPower*((-ESC2_motor.shaft_angle) - ESC1_motor.shaft_angle));
-  // ESC2_motor.move( linkPower*((-ESC1_motor.shaft_angle) - ESC2_motor.shaft_angle));
 
   static uint32_t lastTime = millis();
   if(TLB_rx.unpaired() || ((millis()-lastTime)>radioSilenceTimeout)) {
-      if(ESC1_motor.enabled) { TLB_log_v("freewheeling"); simpleFOCstartFreeWheel(); neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_2); }
+      if(!freewheelMultiCore) { TLB_log_v("freewheeling"); freewheelMultiCore=true; neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_2); }
       if(TLB_rx.update()) { lastTime = millis(); } // still need to run update function (to pair and such)
   } else {
-    if((!ESC1_motor.enabled) && (!batteryErrorDone)) { TLB_log_v("re-enabling"); simpleFOCstopFreeWheel(); neopixelWrite(RGB_BUILTIN, RGB_LED_OK); }
+    if(freewheelMultiCore && (!batteryErrorDone)) { TLB_log_v("re-enabling"); freewheelMultiCore=false; neopixelWrite(RGB_BUILTIN, RGB_LED_OK); }
     if(TLB_rx.update()) {
-      // TODO: abstract ESC1_motor away for these constants
-      const float maxForwardTorque = ESC1_motor.voltage_limit * 0.75;
-      const float maxBrakingTorque = ESC1_motor.voltage_limit; // strong braking (to be tampered by reducing it as speed reduces)
-      const float brakingDecreseThresh = 5.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // once speed drops below this (final number in radians/sec), reduce braking
-      const float _brakingDecreseThreshInverted = 1.0f/brakingDecreseThresh; // efficiency trick
       uint32_t thisTime = millis();
       int16_t newTargetRaw = TLB_rx.get(0);
       float newTargetConverted = 0.0;
-      float currentSpeed = ((forwardDirection ? ESC1_motor.shaft_velocity : (-ESC1_motor.shaft_velocity))
-                            +(forwardDirection ? (-ESC2_motor.shaft_velocity) : ESC2_motor.shaft_velocity) // reverse velocity
-                            )*0.5f;
+      float currentSpeed = currentSpeedMultiCore; // copy volatile value
       #ifdef LEGACY_TRANSMITTER
         newTargetRaw -= 1000; // rtlopez/espnow-rclink library only deals in RC 880~2120 values
         lastTime = thisTime;
@@ -408,36 +402,37 @@ void loop() {
           if(currentSpeed > 0.0f) {
             newTargetConverted = newTargetRaw; // copy int to float
             newTargetConverted -= 25.0f; // get negative number
-            newTargetConverted *= (maxBrakingTorque / (25.0f)); // scale
+            newTargetConverted *= (maxBrakingTorqueScalar / (25.0f)); // scale
               newTargetConverted *= min(1.0f, abs(currentSpeed) * _brakingDecreseThreshInverted); // reduce braking below brakingDecreseThresh
           }// else { newTargetConverted = 0.0;}
         } else if(newTargetRaw < 56) { // idling
-          // if(ESC1_motor.enabled) { simpleFOCstartFreeWheel(); }
+          // if(freewheelMultiCore) { freewheelMultiCore = true }
           newTargetConverted = 0.0; // 0-torque is functional free-wheel
         } else if(CPU_temperature_good) { // positive throttle
           newTargetConverted = newTargetRaw - 55; // offset for zero-throttle
-          newTargetConverted *= (maxForwardTorque / ((255.0f)-(55.0f))); // scale
+          newTargetConverted *= (maxForwardTorqueScalar / ((255.0f)-(55.0f))); // scale
         }// else { newTargetConverted = 0.0;}
       #else
         newTargetRaw -= 1500; // rtlopez/espnow-rclink library only deals in RC 880~2120 values
         if(newTargetRaw < 0) { // braking
           if(currentSpeed > 0.0f) {
             newTargetConverted = newTargetRaw; // copy int to float
-            newTargetConverted *= (maxBrakingTorque / (128.0f)); // scale
+            newTargetConverted *= (maxBrakingTorqueScalar / (128.0f)); // scale
             newTargetConverted *= min(1.0f, abs(currentSpeed) * _brakingDecreseThreshInverted); // reduce braking below brakingDecreseThresh
           }// else { newTargetConverted = 0.0;}
         } else if(newTargetRaw == 0) { // idling
-          // if(ESC1_motor.enabled) { simpleFOCstartFreeWheel(); }
+          // if(freewheelMultiCore) { freewheelMultiCore = true }
           newTargetConverted = 0.0; // 0-torque is functional free-wheel
         } else if(CPU_temperature_good) { // positive throttle
           newTargetConverted = newTargetRaw; // copy int to float
-          newTargetConverted *= (maxForwardTorque / (127.0f)); // scale
+          newTargetConverted *= (maxForwardTorqueScalar / (127.0f)); // scale
         }// else { newTargetConverted = 0.0;}
       #endif
       // TLB_log_v("received: %d->%.2f  %lu  %u", newTargetRaw, newTargetConverted, thisTime-lastTime, CPU_temperature_good);
       lastTime = thisTime;
-      ESC1_motor.target = (forwardDirection ? newTargetConverted : (-newTargetConverted));
-      ESC2_motor.target = (forwardDirection ? (-newTargetConverted) : newTargetConverted); // reverse input!
+      //if(coreFOCsetup_flag) // not needed
+      newTargetUnscaledMultiCore = newTargetConverted; // multi-core communication
+      newTargetUnscaledMultiCore_flag = true; // (minor optimization for the multi-core communication)
     }
   }
 
@@ -456,6 +451,90 @@ void loop() {
       // debugSerial.printf("cur %.2f,  %.2f, %.2f \t VBAT: %.2f\n", cur_L_now, cur_M1_now, cur_M2_now, VBAT_now);
       // debugSerial.printf("spd: %lu\n", spd_now);
       // debugSerial.printf("CPU temp: %.2f\n",CPU_temperature);
+      // debugSerial.printf("VBAT_now: %.3f\n",VBAT_now);
     }
   #endif
 }
+
+void coreOtherSetup(void* arg) { // all non-FOC related stuff
+  while(!coreFOCsetup_flag) { delay(1); } // wait for FOC core to finish setup (not strictly needed, but i like it)
+
+  //// receiver stuff (move to better location?)
+  /*bool initSuccess = */
+  TLB_rx.begin(true); // init ESP-NOW receiver (incl. softAP)
+  TLB_rx.setSensor(0, VBAT_used_for_FOC*100);
+  
+  //// if it made it here, all is OK, let's fucking go
+  TLB_log_v("let's fucking go");
+  neopixelWrite(RGB_BUILTIN, RGB_LED_OK);
+
+  loopStartTime = millis(); // make simple sinusoid input start at 0, instead of starting at high speed
+
+  while(1) { coreOtherLoop(); } // finally, loop forever
+}
+
+/////////////////////////////////////////// main setup //////////////////////////////////////////
+
+void setup() {
+  initRGB_LED(RGB_LED_INFO_3); // setup RGB LED (for debug) (note: LED init is done early, for easier debug)
+  #if(RELEASE_BUILD_CHECK) // if this is NOT a release build
+    delay(250); // patch, because USBCDC can't be bothered to wait
+    debugSerial.begin(115200);
+    debugSerial.setDebugOutput(true); // posts ESP (RTOS) debug here as well?
+    // while(!debugSerial) { /*wait*/ } // doesn't wait for serial port to be OPENEND, BUT i believe it enabled re-uploading?!? (not sure why, but uploading can fail without this check)
+  #else
+    delay(25); // to be improved, but it seems prudent to give the seperate systems a little time to boot
+  #endif
+  TLB_log_d("boot %s %s", __DATE__, __TIME__); // even in release build, print something to me know the ESP is alive (and which code it's running)
+
+  initEXT_PERIPHpins();
+  TLB_log_v("EXT_PERIPH init done");
+
+  initPSUs(); // setup step-down converter pins
+  TLB_log_v("PSU init done");
+  delay(10); // idk, why not
+  initADCpins(); // setup ADC pins
+  TLB_log_v("ADC init done");
+
+  initTempSensor();  temp_sensor_read_celsius(&CPU_temperature);
+  // TLB_log_v("temp sensor init done");
+  
+  VBAT_used_for_FOC = mes_VBAT();
+  TLB_log_i("VBAT used for FOC: %.2f",VBAT_used_for_FOC);
+  cellCount = lithiumCellCalc(VBAT_used_for_FOC);
+  TLB_log_i("cell count: %d",cellCount);
+  if(!setDynamicVBATbounds(dynamic_VBAT_bounds, cellCount)) { // usually succeeds, but may fail during power-supply debugging
+    dynamic_VBAT_bounds[0]=check_VBAT_bounds_ext[0];  dynamic_VBAT_bounds[1]=check_VBAT_bounds[0];
+    dynamic_VBAT_bounds[2]=check_VBAT_bounds[1];  dynamic_VBAT_bounds[3]=check_VBAT_bounds_ext[1];
+  }
+  TLB_log_i("dynamic VBAT bounds: %.2f~%.2f <-> %.2f~%.2f",dynamic_VBAT_bounds[0],dynamic_VBAT_bounds[1],dynamic_VBAT_bounds[2],dynamic_VBAT_bounds[3]);
+  // if(cellCount >= minimumCellCount) { VBAT_used_for_FOC = cellCount * _lithiumCellThresholds[2]; } // set limits to typical fully charged cell voltage
+
+  delay(10); // idk, why not
+  if(FOC_core) {
+    xTaskCreatePinnedToCore(
+        coreOtherSetup, /* Function to implement the task */
+        "otherTask", /* Name of the task */
+        10000,  /* Stack size in words */
+        NULL,  /* Task input parameter */
+        0,  /* Priority of the task */
+        &core0task,  /* Task handle. */
+        0); /* Core where the task should run */
+    coreFOCsetup(NULL); // run FOC code on core 1 (loops forever)
+  } else {
+    xTaskCreatePinnedToCore(
+      coreFOCsetup, /* Function to implement the task */
+      "FOCtask", /* Name of the task */
+      10000,  /* Stack size in words */
+      NULL,  /* Task input parameter */
+      0,  /* Priority of the task */
+      &core0task,  /* Task handle. */
+      FOC_core); /* Core where the task should run */
+    coreOtherSetup(NULL); // run other code on core 1 (loops forever)
+  }
+}
+
+
+/////////////////////////////////////////// main loop ///////////////////////////////////////////
+
+void loop() {} // never reached (see coreOtherLoop() and coreFOCloop())

@@ -12,7 +12,7 @@
 #define NUM_ANALOG_INPUTS       20
 
 //// this file was slightly modified (as intended)
-#ifdef PCB_R01
+#ifdef TLB_PCB_R01
   static const uint8_t LED_BUILTIN = SOC_GPIO_PIN_COUNT + 41; // PCB R01 has a neopixel (SK6812D-EC3210R) LED on pin 41
 #else
   #error("no PCB revision defined, what pin has the LED?")

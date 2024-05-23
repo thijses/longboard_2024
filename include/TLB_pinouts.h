@@ -11,7 +11,7 @@ NOTE: the RBG LED pin is defined in the custom pins_arduino.h header (see boards
 
 
 /////////////////////////////////////// pinout definition ///////////////////////////////////////
-#ifdef PCB_R01
+#ifdef TLB_PCB_R01
   //// ADC inputs (note: ADC1 only, as ADC2 conflicts with WiFi)
   #define PIN_5V_MES        6 // simple voltage divider to measure 5V supply
   #define PIN_12V_MES       7 // simple voltage divider to measure 12V supply
@@ -68,6 +68,7 @@ NOTE: the RBG LED pin is defined in the custom pins_arduino.h header (see boards
   #define ADC_12V_MES_RES_HIGH 20000 // (Ohms) resistor to source for measuring 12V supply
   #define ADC_VBAT_MES_RES_LOW  6800   // (Ohms) resistor to GND for measuring VBAT
   #define ADC_VBAT_MES_RES_HIGH 120000 // (Ohms) resistor to source for measuring VBAT
+  #define ADC_VBAT_MES_OFFSET   (0.50f) // (Volts) offset (caused by diode) when measuring VBAT
 
   //// current measurement scaling: https://atta.szlcsc.com/upload/public/pdf/source/20210401/C469386_736CACCB33E89B0F82D9E8414A64AB06.pdf
   #define ADC_CUR_SENSE_L_SCALE   132 // (mV/A) V = VCC/2 + scale*A
@@ -87,5 +88,8 @@ NOTE: the RBG LED pin is defined in the custom pins_arduino.h header (see boards
   #error("no PCB revision specified") // note: this error only needs to be checked for once
 #endif
 
+#ifndef ADC_VBAT_MES_OFFSET
+  #define ADC_VBAT_MES_OFFSET (0.0f) // (Volts) VBAT measurement offset
+#endif
 
 //// TODO: define external peripheral pin definitions (which refer back to PIN_EXT_PERIPH_ pins)
