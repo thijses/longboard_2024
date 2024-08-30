@@ -29,6 +29,8 @@ _configure6PWM
 // #define FOC_2_USE_BEMF // use Back-EFM as input for motor 2
 
 //// other/debug defines:
+#define DELAY_FREEWHEEL_UNTILL_SPEEL_LOW // starting freewheeling currently causes a shock, this helps mitigate that
+//#define DELAY_FREEWHEEL_SMOOTHLY // this extends the smoothness of DELAY_FREEWHEEL_UNTILL_SPEEL_LOW, but it needs careful tuning & testing
 //#define SIMPLEFOC_DISABLE_DEBUG // disables simpleFOC debug prints
 
 #define SIMPLEFOC_ESP32_HW_DEADTIME true // explicitly specify that the ESP32's MCPWM peripheral dead-time should be used (instead of SW deadtime)
@@ -48,8 +50,9 @@ _configure6PWM
 #define ESC_TORQUE_TYPE       TorqueControlType::voltage // torque control type, without current sensors, only TorqueControlType::voltage is available
 #define ESC_MODULATION_TYPE   FOCModulationType::SpaceVectorPWM // trapezoidal 120 should work best with HALL sensors {SinePWM,SpaceVectorPWM,Trapezoid_120,Trapezoid_150}
 #define ESC_PWM_FREQ          20000 // (Hz) PWM freq used for motor control. Lower reduces switching power, higher improves consistancy and noise
-#define ESC_VOLTAGE_LIMIT     25.6f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power
+// #define ESC_VOLTAGE_LIMIT     25.6f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power
 // #define ESC_VOLTAGE_LIMIT      6.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // DEBUG
+#define ESC_VOLTAGE_LIMIT     50.4f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // ONLY FOR SHORT TEST
 #define ESC_SENSOR_ALIGN      DEF_VOLTAGE_SENSOR_ALIGN // (Volts) note: will get constrained to ESC_VOLTAGE_LIMIT
 #define ESC_VELOC_INDEX       DEF_INDEX_SEARCH_TARGET_VELOCITY // (radians/sec)
 //// the gate driver i'm using: FD6288Q  https://static.qingshow.net/fortiortech/file/1597746029372.pdf
@@ -67,7 +70,8 @@ _configure6PWM
     #define ESC1_PHASE_INDUCT 0.00037f // (Henry) measured using PROSTER BM4070, 2mH range
     #define _ESC1_VELOC_MAX_1     (2160.0f*_RPM_TO_RADS) // (radians/sec) a simple speed limit, based on spec limit
     #define _ESC1_VELOC_MAX_2     ((float)(TWO_PI*speedLimit/MOTOR1_WHEELCIRCUM)) // (radians/sec) calculate FOC speed limit using longboard speed limit (in meters/sec)
-    #define ESC1_VELOC_MAX        min(_ESC1_VELOC_MAX_1,_ESC1_VELOC_MAX_2) // whichever speed limit is MORE CONSERVATIVE, use that one.
+    // #define ESC1_VELOC_MAX        min(_ESC1_VELOC_MAX_1,_ESC1_VELOC_MAX_2) // whichever speed limit is MORE CONSERVATIVE, use that one.
+    #define ESC1_VELOC_MAX        max(_ESC1_VELOC_MAX_1,_ESC1_VELOC_MAX_2) // ONLY FOR SHORT TEST (min/max reversed)
     //#define FOC_1_USE_HALL // defining default sensor type here is TODO!
     #define MOTOR1_WHEELCIRCUM   (0.0828f*PI) // (meters) circumference of wheel
     #define _HALL1_STEPSIZE  (TWO_PI / ((float)((2*ESC1_POLE_PAIRS) * 3))) // each hall sensor does 2*poles=20 steps per rotation, and there's 3 sensors (phase-offset)
@@ -77,8 +81,8 @@ _configure6PWM
     //// per-motor power limits:
     // #define ESC1_CURRENT_LIMIT    min(22.0f,ESC_CURRENT_SENSOR_MAX) // motor is advertised as 22A max (even though this does not match the 24-36V rating)
     // #define ESC1_VOLTAGE_LIMIT    min(ESC_VOLTAGE_LIMIT,400.0f/ESC1_CURRENT_LIMIT) // motor is rated for 400W, so this attempts to limit it to that
-    #define ESC1_CURRENT_LIMIT    max(22.0f,ESC_CURRENT_SENSOR_MAX) // oops, all power
-    #define ESC1_VOLTAGE_LIMIT    max(ESC_VOLTAGE_LIMIT,400.0f/ESC1_CURRENT_LIMIT) // oops, all power
+    #define ESC1_CURRENT_LIMIT    max(22.0f,ESC_CURRENT_SENSOR_MAX) // ONLY FOR SHORT TEST (min/max reversed)
+    #define ESC1_VOLTAGE_LIMIT    max(ESC_VOLTAGE_LIMIT,400.0f/ESC1_CURRENT_LIMIT) // ONLY FOR SHORT TEST (min/max reversed) (note: i don't think current limit makes 100% sense here)
   #elif defined(MOTOR1_BRH5065)
     #warning("BRH5065 motor parameters are unfinished")
     //// an outrunner motor, advertised as 200kv, ~1200W, hall-sensors built-in
@@ -136,7 +140,8 @@ _configure6PWM
     #define ESC2_PHASE_INDUCT 0.00037f // (Henry) measured using PROSTER BM4070, 2mH range
     #define _ESC2_VELOC_MAX_1     (2160.0f*_RPM_TO_RADS) // (radians/sec) a simple speed limit, based on spec limit
     #define _ESC2_VELOC_MAX_2     ((float)(TWO_PI*speedLimit/MOTOR2_WHEELCIRCUM)) // (radians/sec) calculate FOC speed limit using longboard speed limit (in meters/sec)
-    #define ESC2_VELOC_MAX        min(_ESC2_VELOC_MAX_1,_ESC2_VELOC_MAX_2) // whichever speed limit is MORE CONSERVATIVE, use that one.
+    // #define ESC2_VELOC_MAX        min(_ESC2_VELOC_MAX_1,_ESC2_VELOC_MAX_2) // whichever speed limit is MORE CONSERVATIVE, use that one.
+    #define ESC2_VELOC_MAX        max(_ESC2_VELOC_MAX_1,_ESC2_VELOC_MAX_2) // ONLY FOR SHORT TEST (min/max reversed)
     //#define FOC_2_USE_HALL // defining default sensor type here is TODO!
     #define MOTOR2_WHEELCIRCUM   (0.0828f*PI) // (meters) circumference of wheel
     #define _HALL2_STEPSIZE  (TWO_PI / ((float)((2*ESC2_POLE_PAIRS) * 3))) // each hall sensor does 2*poles=20 steps per rotation, and there's 3 sensors (phase-offset)
@@ -146,8 +151,8 @@ _configure6PWM
     //// per-motor power limits:
     // #define ESC2_CURRENT_LIMIT    min(22.0f,ESC_CURRENT_SENSOR_MAX) // motor is advertised as 22A max (even though this does not match the 24-36V rating)
     // #define ESC2_VOLTAGE_LIMIT    min(ESC_VOLTAGE_LIMIT,400.0f/ESC2_CURRENT_LIMIT) // motor is rated for 400W, so this attempts to limit it to that
-    #define ESC2_CURRENT_LIMIT    max(22.0f,ESC_CURRENT_SENSOR_MAX) // oops, all power
-    #define ESC2_VOLTAGE_LIMIT    max(ESC_VOLTAGE_LIMIT,400.0f/ESC2_CURRENT_LIMIT) // oops, all power
+    #define ESC2_CURRENT_LIMIT    max(22.0f,ESC_CURRENT_SENSOR_MAX) // ONLY FOR SHORT TEST (min/max reversed)
+    #define ESC2_VOLTAGE_LIMIT    max(ESC_VOLTAGE_LIMIT,400.0f/ESC2_CURRENT_LIMIT) // ONLY FOR SHORT TEST (min/max reversed)
   #elif defined(MOTOR2_BRH5065)
     #error("copy BRH5065 parameters from motor 1 once they're finished")
   #else

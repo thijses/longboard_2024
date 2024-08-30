@@ -2,38 +2,21 @@
 
 
 TODO:
+- ctrl+f 'ONLY FOR SHORT TEST' and restore those lines to normal
 - logging, see note below, i actually think i've got a pretty good pitch
 - move LPF_velocity setting to define
-- braking (just shorting to GND, or try setting negative torque)
-  * driver.setPhaseState(PhaseState
-- run motor stuff (including interrupts!) on second CPU core
 - rewrite defines and motor1/motor2 stuff to reduce the number of doubled code (copy-pasting is bad)
   * also define FOC_1_USE_HALL in the motor defines by default, but with an optional AS5600/BEMF override
 - write little LED_STATE struct, to make sure error states can only get worse, untill an explicit clear_error function is called
-- doubled voltage_limit class members? check which one is leading
-- motor tuning (basics)
-- radio basics
+- doubled voltage_limit FOC class members? check which one is leading
 - motor tuning (in depth)
-- try to ensure zero_electric_offset (sensor -> electric rotational offset) mechanically?
 - BEMF??? voltage_bemf
-- get USBCDC to wait for port to be opened
-- do endurance test (run for 1hr+) to check for any strange behaviour.
-  (the current code uses floats that get VERY big after running for a while. This is an issue for many calculations)
-  * the move() function uses shaftAngle (which uses a Low-Passed sensor.getAngle(), which is absolute/growing)
-    ~ fortunately, torque control mode does not use 
-    ~ it DOES use shaft_velocity, but that uses HallSensor::getVelocity(), which uses integers (although somewhat lackluster with the 0-speed), so it's all good
-  * see line 384 in BLDCMotor.cpp for the TODO note from the simpleFOC devs
-  * if i'm reading line 104 of HallSensor.cpp correctly, float overflow/grow should NOT be an issue (because of modulo operator on integers to make angle_prev)
-    ~ note: this does rely on my belief that angle_prev is used INSTEAD of getSensorAngle() in the FOC code
-- use sensor.attachSectorCallback() to make the whole thing interrupt-based? (note: check function execution times first!!!)
 - (not really my problem) i think the simpleFOC PP check is perhaps forgetting to account for imperfect hall sensor sampling.
   ~ during calibration, with PP set to 10, the check returned 12, and with PP set to 12, the check returned 14.4 (1.2x trend)
     i looked at the code at lines 253 of BLDCMotor.cpp, and concluded that the 'moved' position-delta was exactly 1 _HALL_STEPSIZE off each time.
     similarly, the arbetrary 0.5f threshold is failed, because PP * _HALL_STEPSIZE =~ 1.05, which is always > 0.5f.
     If the library simply calculates _HALL_STEPSIZE (using only known params, as i have), it could use that instead of 0.5f, to get a more logical threshold.
   ~ maybe i should contribute to the simpleFOC project with an issue report, or just a fixed branch
-- debug: sometimes when i stop the motor by hand (in torque mode at low power), the motor gets stuck (not mechanically)
-  ~ maybe some strange velocity==0, or very-rare HALL sensor glitch?
 
 for release:
 - (logging???)
@@ -52,6 +35,11 @@ notes:
 - motor2 does 17km/h in the negative direction (at 22V no-load), but only 16 in the positive direction. There could be some tuning there
   * using SpaceVectorPWM it got up to +23, -26, but with lots of hall interrupt errors
   * Trapezoid_150 is a HUGE NONO! shit sounds awful
+- anecdotal tests:
+  * in my living room, with a 5S battery (20V), i saw it draw a cool 40Amps (40A*20V=800W=400W per motor, exactly as expected from the HUB83MM)
+    ~ this also means that a 40A fuse on the 6S batteries is right on the limit already.
+      with a 12S setup, if the fuse blows at high speed, i'll be thrown off my board (at high speed)
+    ~ note: this did require a 100% throttle from 0 speed, with all safeguards and SW limiters turned OFF, so i can probably account for this in SW
 
 encoder issues debugging:
 - only motor1 is regularly having issues, with both 'no state change' and 'bad state -> 000'
@@ -71,7 +59,8 @@ encoder issues debugging:
 #define _MPS_TO_KPH     (3.60000000000f) // 1/3.6
 #define _RADPS_TO_ROTPS (0.15915494309f) // 1/TWO_PI
 
-const float speedLimit = 25.0/3.6; // (meters/sec) speed limit of longboard
+const float speedLimit = _KPH_TO_MPS*35.0; // (meters/sec)  ONLY FOR SHORT TEST!
+// const float speedLimit = _KPH_TO_MPS*25.0; // (meters/sec) speed limit of longboard
 const float CPU_temperature_limit = 85.0f; // (deg Celsius) software temperature limit (starts ESCs free-wheeling)
 const uint32_t radioSilenceTimeout = 2000; // (millis) if radio has been silent for this long, start free-wheeling
 const bool forwardDirection = true; // a boolean used to flip forward direction. Personally, i prefer front-wheel drive, and i recently flipped the ESC around.
@@ -101,8 +90,8 @@ const bool FOC_core = ARDUINO_RUNNING_CORE; // which core to run FOC stuff on (s
 //// TODO: abstract ESC1 away for these constants
 const float maxForwardTorqueScalar = 1.0;
 const float maxBrakingTorqueScalar = 0.75; // strong braking (to be softened by reducing it as speed reduces)
-const float brakingDecreseThresh = 5.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // once speed drops below this (final number in radians/sec), reduce braking
-const float _brakingDecreseThreshInverted = 1.0f/brakingDecreseThresh; // efficiency trick
+const float brakingDecreaseThresh = 5.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // (radians/sec) once speed drops below this (final number in radians/sec), reduce braking
+const float _brakingDecreaseThreshInverted = 1.0f/brakingDecreaseThresh; // efficiency trick
 //// TODO: bell-curve (sinusoidal/hyperbolic) braking (weak when going fast, weak when standing still, strong in the middle)
 
 ///////////////////////////////////////// ADC constants /////////////////////////////////////////
@@ -135,6 +124,18 @@ float CPU_temperature = 20.0;
 const float temperature_good_hyst = 5.0; // after an over-temperature event, the temperature needs to drop at least this much to be considered 'good' again
 volatile bool CPU_temperature_good=true;
 
+#ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+  bool delayedFreewheel=false; // (single-core) set to true instead of freewheelMultiCore
+  const float startFreewheelMaxSpeed = 3.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // (radians/sec) speed threshold at which freewheeling can safely start
+  #ifdef DELAY_FREEWHEEL_SMOOTHLY // if this is defined, 
+    //// TODO: delay constants & timer variable
+    const float delayFreewheelThrotle = 0.0f; // (-1.0 to 1.0) throttle value (absolute(?)) to apply instead of freewheeling. Setting this low still causes a shock
+  #else
+    //// NOTE: Without DELAY_FREEWHEEL_SMOOTHLY a throttle value of 0 may still cause some shock
+    const float delayFreewheelThrotle = 0.0f; // (-1.0 to 1.0) throttle value (absolute(?)) to apply instead of freewheeling.
+  #endif
+#endif
+
 uint32_t loopStartTime; // (millis) record when setup() finished and loop() started
 
 const float LPF_cur_Tf = 0.1; // Low-Pass Filter time constant for current sensors
@@ -143,8 +144,8 @@ LowPassFilter LPF_cur_M1_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO
 LowPassFilter LPF_cur_M2_debug{LPF_cur_Tf}; // TODO: relpace with efficient FIFO or some shit?
 const float LPF_VBAT_Tf = 0.5; // Low-Pass Filter time constant for current sensors
 LowPassFilter LPF_VBAT_debug{LPF_VBAT_Tf}; // TODO: relpace with efficient FIFO or some shit?
-const float LPF_speed_Tf = 0.05; // Low-Pass Filter time constant for current sensors
-LowPassFilter LPF_speed_debug{LPF_speed_Tf}; // deleteme
+// const float LPF_speed_Tf = 0.05; // Low-Pass Filter time constant for current sensors
+// LowPassFilter LPF_speed_debug{LPF_speed_Tf}; // deleteme
 
 const uint32_t batteryCheckStartTime = (LPF_VBAT_Tf * 1000.0) * 2; // only start checking battery voltage after this amount of time has passed (after loopStartTime!)
 
@@ -157,9 +158,9 @@ const uint32_t debugPrintInterval = 500; // (millis)
 #define RGB_LED_OK          0, 64,  0 // green
 #define RGB_LED_WARNING    55, 20,  0 // orange
 #define RGB_LED_ERROR      64,  0,  0 // red
-#define RGB_LED_INFO_1      0,  0, 64 // blue
-#define RGB_LED_INFO_2     64,  0, 64 // purple
-#define RGB_LED_INFO_3     64, 64, 64 // white
+#define RGB_LED_INFO_1      0,  0, 64 // blue    (so far, this one is unused, making it perfect for debug stuff)
+#define RGB_LED_INFO_2     64,  0, 64 // purple  (used for radio issues)
+#define RGB_LED_INFO_3     64, 64, 64 // white   (used at boot (before ANYTHING else))
 
 
 
@@ -223,10 +224,10 @@ bool initRGB_LED(uint8_t red_val=0, uint8_t green_val=0, uint8_t blue_val=0) {
 }
 
 void initTempSensor(){
-    temp_sensor_config_t temp_sensor = TSENS_CONFIG_DEFAULT();
-    temp_sensor.dac_offset = TSENS_DAC_L2;  // TSENS_DAC_L2 is default; L4(-40°C ~ 20°C), L2(-10°C ~ 80°C), L1(20°C ~ 100°C), L0(50°C ~ 125°C)
-    temp_sensor_set_config(temp_sensor);
-    temp_sensor_start();
+  temp_sensor_config_t temp_sensor = TSENS_CONFIG_DEFAULT();
+  temp_sensor.dac_offset = TSENS_DAC_L2;  // TSENS_DAC_L2 is default; L4(-40°C ~ 20°C), L2(-10°C ~ 80°C), L1(20°C ~ 100°C), L0(50°C ~ 125°C)
+  temp_sensor_set_config(temp_sensor);
+  temp_sensor_start();
 }
 
 void errorHaltHandler() {
@@ -240,7 +241,7 @@ void errorHaltHandler() {
 
 /////////////////////////////////////////// multi-core /////////////////////////////////////////
 volatile float currentSpeedMultiCore; // (radians/sec) current speed is passed between cores (from FOC core to other core)
-volatile float newTargetUnscaledMultiCore; // updated motor target is passed between cores (from other core to FOC core)
+volatile float newTargetUnscaledMultiCore; // (-1.0 to 1.0) updated motor target is passed between cores (from other core to FOC core)
 volatile bool newTargetUnscaledMultiCore_flag=false; // very minor optimization, to avoid checking/using newTargetUnscaledMultiCore every loop
 volatile bool coreFOCsetup_flag=false;
 volatile bool freewheelMultiCore = false; // whether freewheeling should be enabled
@@ -292,6 +293,15 @@ void coreFOCsetup(void* arg) { // the 'task' that is started on the second core 
     errorHaltHandler();
   }
   TLB_log_v("FOC basic init done");
+
+  //// some debug: (read back parameters (post-constraints), see 'ONLY FOR SHORT TEST')
+  float velocityLimitKPH = ESC1_motor.velocity_limit * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH; // (only motor 1 is printed)
+  TLB_log_v("velocity limit: %.2f km/h", velocityLimitKPH);
+  TLB_log_v("theoretical voltage limit: %.2f V", ESC1_VOLTAGE_LIMIT); // (only motor 1 is printed)
+  TLB_log_v("voltage limit (this battery): %.2f V", ESC1_motor.voltage_limit); // (only motor 1 is printed)
+  TLB_log_v("current limit (per motor): %.2f A", ESC1_motor.current_limit); // (only motor 1 is printed) NOTE: currently open-loop (sensor unused)
+  TLB_log_v("power limit (per motor): %.2f W", ESC1_motor.voltage_limit * ESC1_motor.current_limit); // (only motor 1 is printed)
+  TLB_log_v("theoretical power limit: %.2f W", ESC1_VOLTAGE_LIMIT * ESC1_motor.current_limit); // (only motor 1 is printed)
 
   //// init other stuff...
 
@@ -360,14 +370,26 @@ void coreOtherLoop() {
   if((millis() - loopStartTime) > batteryCheckStartTime) {
     if((!batteryWarningDone) && ((VBAT_now < dynamic_VBAT_bounds[1]) || (VBAT_now > dynamic_VBAT_bounds[2]))) {
       batteryWarningDone = true; // avoid spam
-      TLB_log_w("VBAT getting getting extreme: %.2f", VBAT_now);
+      TLB_log_w("VBAT getting extreme: %.2f", VBAT_now);
       neopixelWrite(RGB_BUILTIN, RGB_LED_WARNING); // will remain in warning-mode untill something changes it
       //// TODO: limit max power?
     } else if((!batteryErrorDone) && ((VBAT_now < dynamic_VBAT_bounds[0]) || (VBAT_now > dynamic_VBAT_bounds[3]))) {
       batteryErrorDone = true; // avoid spam
       TLB_log_e("VBAT out of bounds!: %.2f", VBAT_now);
       neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR); // 
-      freewheelMultiCore = true;
+      #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+        delayedFreewheel=true;
+        if(abs(newTargetUnscaledMultiCore) > 0.03) {
+          float polarizedThrottle = (newTargetUnscaledMultiCore > 0.0) ? delayFreewheelThrotle : (-delayFreewheelThrotle);
+          newTargetUnscaledMultiCore = polarizedThrottle; // multi-core communication
+          newTargetUnscaledMultiCore_flag = true; // (minor optimization for the multi-core communication)
+          #ifdef DELAY_FREEWHEEL_SMOOTHLY
+            //// TODO: start timer?
+          #endif
+        }
+      #else
+        freewheelMultiCore = true;
+      #endif
     }
   }
 
@@ -384,12 +406,37 @@ void coreOtherLoop() {
     neopixelWrite(RGB_BUILTIN, RGB_LED_OK); // TODO: check other factors
   }
 
-  static uint32_t lastTime = millis();
+  static uint32_t lastTime = millis(); // note: static!
   if(TLB_rx.unpaired() || ((millis()-lastTime)>radioSilenceTimeout)) {
-      if(!freewheelMultiCore) { TLB_log_v("freewheeling"); freewheelMultiCore=true; neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_2); }
+      if((!freewheelMultiCore)
+        #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW // this code is not the MOST legible, but it does the job
+          && (!delayedFreewheel)
+        #endif
+          ) { // only once
+        #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+          delayedFreewheel=true;
+          if(abs(newTargetUnscaledMultiCore) > 0.03) {
+            float polarizedThrottle = (newTargetUnscaledMultiCore > 0.0) ? delayFreewheelThrotle : (-delayFreewheelThrotle);
+            newTargetUnscaledMultiCore = polarizedThrottle; // multi-core communication
+            newTargetUnscaledMultiCore_flag = true; // (minor optimization for the multi-core communication)
+            #ifdef DELAY_FREEWHEEL_SMOOTHLY
+              //// TODO: start timer?
+            #endif
+          }
+        #else
+          freewheelMultiCore = true;
+        #endif
+        TLB_log_v("radio silence -> freewheeling"); neopixelWrite(RGB_BUILTIN, RGB_LED_INFO_2);
+      }
       if(TLB_rx.update()) { lastTime = millis(); } // still need to run update function (to pair and such)
   } else {
-    if(freewheelMultiCore && (!batteryErrorDone)) { TLB_log_v("re-enabling"); freewheelMultiCore=false; neopixelWrite(RGB_BUILTIN, RGB_LED_OK); }
+    if(freewheelMultiCore && (!batteryErrorDone)) {
+      #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+        delayedFreewheel=false;
+      #endif
+      freewheelMultiCore=false;
+      TLB_log_v("re-enabling");  neopixelWrite(RGB_BUILTIN, RGB_LED_OK);
+    }
     if(TLB_rx.update()) {
       uint32_t thisTime = millis();
       int16_t newTargetRaw = TLB_rx.get(0);
@@ -403,7 +450,7 @@ void coreOtherLoop() {
             newTargetConverted = newTargetRaw; // copy int to float
             newTargetConverted -= 25.0f; // get negative number
             newTargetConverted *= (maxBrakingTorqueScalar / (25.0f)); // scale
-              newTargetConverted *= min(1.0f, abs(currentSpeed) * _brakingDecreseThreshInverted); // reduce braking below brakingDecreseThresh
+            newTargetConverted *= min(1.0f, abs(currentSpeed) * _brakingDecreaseThreshInverted); // reduce braking below brakingDecreaseThresh
           }// else { newTargetConverted = 0.0;}
         } else if(newTargetRaw < 56) { // idling
           // if(freewheelMultiCore) { freewheelMultiCore = true }
@@ -418,7 +465,7 @@ void coreOtherLoop() {
           if(currentSpeed > 0.0f) {
             newTargetConverted = newTargetRaw; // copy int to float
             newTargetConverted *= (maxBrakingTorqueScalar / (128.0f)); // scale
-            newTargetConverted *= min(1.0f, abs(currentSpeed) * _brakingDecreseThreshInverted); // reduce braking below brakingDecreseThresh
+            newTargetConverted *= min(1.0f, abs(currentSpeed) * _brakingDecreaseThreshInverted); // reduce braking below brakingDecreaseThresh
           }// else { newTargetConverted = 0.0;}
         } else if(newTargetRaw == 0) { // idling
           // if(freewheelMultiCore) { freewheelMultiCore = true }
@@ -435,6 +482,21 @@ void coreOtherLoop() {
       newTargetUnscaledMultiCore_flag = true; // (minor optimization for the multi-core communication)
     }
   }
+
+  #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+    if(delayedFreewheel && (!freewheelMultiCore)) {
+      float currentSpeed = currentSpeedMultiCore; // copy volatile value
+      #ifdef DELAY_FREEWHEEL_SMOOTHLY
+        #error("code is TODO!")
+        //// TODO: do some math (using currentSpeed) to determine an appropriate throttle value (to slowly reach startFreewheelMaxSpeed)
+      #endif
+      if(abs(currentSpeed) < startFreewheelMaxSpeed) {
+        freewheelMultiCore = true;
+        newTargetUnscaledMultiCore = 0.0f; // multi-core communication
+        newTargetUnscaledMultiCore_flag = true; // (minor optimization for the multi-core communication)
+      }
+    }
+  #endif
 
   #if RELEASE_BUILD_CHECK
     if((millis()-debugPrintTimer)>=debugPrintInterval) {
@@ -463,9 +525,10 @@ void coreOtherSetup(void* arg) { // all non-FOC related stuff
   /*bool initSuccess = */
   TLB_rx.begin(true); // init ESP-NOW receiver (incl. softAP)
   TLB_rx.setSensor(0, VBAT_used_for_FOC*100);
+  //delay(100); // this delay could help prevent debug message prints colliding (between cores and ISRs)
   
   //// if it made it here, all is OK, let's fucking go
-  TLB_log_v("let's fucking go");
+  // TLB_log_v("let's fucking go"); // this message collides with debug prints from an ISR (from WiFiGeneric)
   neopixelWrite(RGB_BUILTIN, RGB_LED_OK);
 
   loopStartTime = millis(); // make simple sinusoid input start at 0, instead of starting at high speed
