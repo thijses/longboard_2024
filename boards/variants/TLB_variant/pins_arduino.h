@@ -8,7 +8,7 @@
 #define USB_PID 0x1001
 
 //// this file was slightly modified (as intended)
-#ifdef TLB_PCB_R01
+#if defined(TLB_PCB_R01) || (TLB_PCB_R02)
   static const uint8_t LED_BUILTIN = SOC_GPIO_PIN_COUNT + 41; // PCB R01 has a neopixel (SK6812D-EC3210R) LED on pin 41
 #else
   #error("no PCB revision defined, what pin has the LED?")

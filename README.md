@@ -1,5 +1,5 @@
 # Thijs LongBoard (TLB) firmware
-This repo contains the code (compiled using platformIO) for my custom electric longboard. This thing is a 12-60V (3-13S LiPo) BLDC speed-controller (currently FOC focussed, but sensorless (BEMF) option is in development), as well as an ESP32-S3 for control & radio. The PCB is intended to be mounted inbetween the board and the truck (where most boards have a soft-plastic spacer)
+This repo contains the code (compiled using platformIO) for my custom electric longboard. This thing is a 12-60V (3-13S LiPo) BLDC speed-controller (FOC focussed), as well as an ESP32-S3 for control & radio. The PCB is intended to be mounted inbetween the board and the truck (where most boards have a soft-plastic spacer)
 
 The design of the PCB (that this code is intended to run on) can be found here:  
 https://oshwlab.com/s.t.van.liempd/tlb  

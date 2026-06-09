@@ -11,26 +11,25 @@ NOTE: the RBG LED pin is defined in the custom pins_arduino.h header (see boards
 
 
 /////////////////////////////////////// pinout definition ///////////////////////////////////////
-#ifdef TLB_PCB_R01
-  //// ADC inputs (note: ADC1 only, as ADC2 conflicts with WiFi)
-  #define PIN_5V_MES        6 // simple voltage divider to measure 5V supply
-  #define PIN_12V_MES       7 // simple voltage divider to measure 12V supply
-  #define PIN_VBAT_MES      3 // simple voltage divider to measure VBAT
-  #define PIN_CUR_SENSE_L   9 // 10A current sensor for everything but the motors (e.g. power supplies). Measured at VBAT high-side
-  #define PIN_CUR_SENSE_M1  8 // 30A current sensor for motor 1. Measured at VBAT high-side
-  #define PIN_CUR_SENSE_M2 10 // 30A current sensor for motor 2. Measured at VBAT high-side
 
-  //// digital inputs
-  #define PIN_TPS_PG       37 // TPS82130 (12V->5V) Power-Good
-  #define PIN_MAX_PG       35 // MAX17504 (VBAT->12V) Power-Good
+//// ADC inputs (note: ADC1 only, as ADC2 conflicts with WiFi)
+#define PIN_5V_MES        6 // simple voltage divider to measure 5V supply
+#define PIN_12V_MES       7 // simple voltage divider to measure 12V supply
+#define PIN_VBAT_MES      3 // simple voltage divider to measure VBAT
+#define PIN_CUR_SENSE_L   9 // 10A current sensor for everything but the motors (e.g. power supplies). Measured at VBAT high-side
+#define PIN_CUR_SENSE_M1  8 // 30A current sensor for motor 1. Measured at VBAT high-side
+#define PIN_CUR_SENSE_M2 10 // 30A current sensor for motor 2. Measured at VBAT high-side
 
-  #define PIN_HALL_BEMF_1A 18 // (digital) 
-  #define PIN_HALL_BEMF_1B  4 // (analog)
-  #define PIN_HALL_BEMF_1C  5 // (analog)
-  #define PIN_HALL_BEMF_2A  1 // (analog) (shared)
-  #define PIN_HALL_BEMF_2B  2 // (analog) (shared)
-  #define PIN_HALL_BEMF_2C 38 // (digital)
-  #define PCB_HALL_PULLUPS Pullup::USE_INTERN // (see simpleFOC library) PCB R01 has no external pullups
+//// digital inputs
+#define PIN_TPS_PG       37 // TPS82130 (12V->5V) Power-Good
+#define PIN_MAX_PG       35 // MAX17504 (VBAT->12V) Power-Good
+
+  #define PIN_HALL_1A 18 // (digital) 
+  #define PIN_HALL_ISNS_1B  4 // (analog)
+  #define PIN_HALL_ISNS_1C  5 // (analog)
+  #define PIN_HALL_2A_ISNS_2C  1 // (analog) (shared)
+  #define PIN_HALL_ISNS_2B  2 // (analog) (shared)
+  #define PIN_HALL_2C 38 // (digital)
 
   //// digital outputs
   #define PIN_TPS_EN       39 // TPS82130 (12V->5V) ENable
@@ -39,10 +38,10 @@ NOTE: the RBG LED pin is defined in the custom pins_arduino.h header (see boards
   // #define PIN_RGB_LED_1    41 // a little RGB LED on the side of the PCB
 
   //// digital GPIO (TBD)
-  #define PIN_ENC1_SDA      1 // (shared) 
-  #define PIN_ENC1_SCL      2 // (shared) 
-  #define PIN_ENC2_SDA     18 // (shared) 
-  #define PIN_ENC2_SCL      4 // (shared) 
+  // #define PIN_ENC1_SDA      1 // (shared) 
+  // #define PIN_ENC1_SCL      2 // (shared) 
+  // #define PIN_ENC2_SDA     18 // (shared) 
+  // #define PIN_ENC2_SCL      4 // (shared) 
   #define PIN_EXT_PERIPH_1 42 // one of the pins on the extra peripheral connector (X104.2)
   #define PIN_EXT_PERIPH_2 40 // one of the pins on the extra peripheral connector (X104.3)
 
@@ -84,6 +83,11 @@ NOTE: the RBG LED pin is defined in the custom pins_arduino.h header (see boards
   #define PIN_MAX_EN_ACTIVE   HIGH // MAX17504 (VBAT->12V) ENable (via EVLO pin)
   #define PIN_MAX_EN_HIGH_Z   (!PIN_MAX_EN_ACTIVE) // define this to initialze this pin as open-drain or open-source
 
+#ifdef TLB_PCB_R01
+  #define PCB_HALL_PULLUPS Pullup::USE_INTERN // (see simpleFOC library) PCB R01 has no external pullups
+#elif defined(TLB_PCB_R02)
+  #define ISNS_SHUNT          (0.010f) // shunt resistor value in Ohms
+  #define ISNS_GAIN           (20.0f) // shunt amplifier gain
 #else // if no PCB revision is specified
   #error("no PCB revision specified") // note: this error only needs to be checked for once
 #endif

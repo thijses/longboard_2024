@@ -14,23 +14,23 @@ _configure6PWM
 
 
 //// define which motors are being used:
-#define MOTOR1_HUB83MM // motor 1 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
-#define MOTOR2_HUB83MM // motor 2 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
-// #define MOTOR1_BRH5065 // motor 1 is a 'BRH5065-200KV' motor
+// #define MOTOR1_HUB83MM // motor 1 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
+// #define MOTOR2_HUB83MM // motor 2 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
+#define MOTOR1_BRH5065 // motor 1 is a 'BRH5065-200KV' motor
 // #define MOTOR2_BRH5065 // motor 2 is an 83mm hub-motor i got from aliexpress (on two seperate occaisions)
 // #define MOTOR1_debugMotor // a small gimbal motor i use for testing
 
 //// define which sensors are begin used:
-#define FOC_1_USE_HALL // use HALL sensor as input for motor 1
-#define FOC_2_USE_HALL // use HALL sensor as input for motor 2
+// #define FOC_1_USE_HALL // use HALL sensor as input for motor 1
+// #define FOC_2_USE_HALL // use HALL sensor as input for motor 2
 // #define FOC_1_USE_AS5600 // use AS5600 I2C magnetic sensor as input for motor 1
 // #define FOC_2_USE_AS5600 // use AS5600 I2C magnetic sensor as input for motor 2
-// #define FOC_1_USE_BEMF // use Back-EFM as input for motor 1
-// #define FOC_2_USE_BEMF // use Back-EFM as input for motor 2
+#define FOC_1_USE_ISNS // use current-sense as input for motor 1
+// #define FOC_2_USE_ISNS // use current-sense as input for motor 2
 
 //// other/debug defines:
-#define DELAY_FREEWHEEL_UNTILL_SPEEL_LOW // starting freewheeling currently causes a shock, this helps mitigate that
-//#define DELAY_FREEWHEEL_SMOOTHLY // this extends the smoothness of DELAY_FREEWHEEL_UNTILL_SPEEL_LOW, but it needs careful tuning & testing
+#define DELAY_FREEWHEEL_UNTILL_SPEED_LOW // starting freewheeling currently causes a shock, this helps mitigate that
+//#define DELAY_FREEWHEEL_SMOOTHLY // this extends the smoothness of DELAY_FREEWHEEL_UNTILL_SPEED_LOW, but it needs careful tuning & testing
 //#define SIMPLEFOC_DISABLE_DEBUG // disables simpleFOC debug prints
 
 #define SIMPLEFOC_ESP32_HW_DEADTIME true // explicitly specify that the ESP32's MCPWM peripheral dead-time should be used (instead of SW deadtime)
@@ -50,9 +50,12 @@ _configure6PWM
 #define ESC_TORQUE_TYPE       TorqueControlType::voltage // torque control type, without current sensors, only TorqueControlType::voltage is available
 #define ESC_MODULATION_TYPE   FOCModulationType::SpaceVectorPWM // trapezoidal 120 should work best with HALL sensors {SinePWM,SpaceVectorPWM,Trapezoid_120,Trapezoid_150}
 #define ESC_PWM_FREQ          20000 // (Hz) PWM freq used for motor control. Lower reduces switching power, higher improves consistancy and noise
-// #define ESC_VOLTAGE_LIMIT     25.6f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power
+#ifdef MAX_SPEED_TEST
+  #define ESC_VOLTAGE_LIMIT     50.4f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // ONLY FOR SHORT TEST
+#else
+  #define ESC_VOLTAGE_LIMIT     25.6f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power
+#endif
 // #define ESC_VOLTAGE_LIMIT      6.0f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // DEBUG
-#define ESC_VOLTAGE_LIMIT     50.4f // (Volts) limit 'voltage' (assumed/calculated), effectively limiting power // ONLY FOR SHORT TEST
 #define ESC_SENSOR_ALIGN      DEF_VOLTAGE_SENSOR_ALIGN // (Volts) note: will get constrained to ESC_VOLTAGE_LIMIT
 #define ESC_VELOC_INDEX       DEF_INDEX_SEARCH_TARGET_VELOCITY // (radians/sec)
 //// the gate driver i'm using: FD6288Q  https://static.qingshow.net/fortiortech/file/1597746029372.pdf
@@ -70,8 +73,11 @@ _configure6PWM
     #define ESC1_PHASE_INDUCT 0.00037f // (Henry) measured using PROSTER BM4070, 2mH range
     #define _ESC1_VELOC_MAX_1     (2160.0f*_RPM_TO_RADS) // (radians/sec) a simple speed limit, based on spec limit
     #define _ESC1_VELOC_MAX_2     ((float)(TWO_PI*speedLimit/MOTOR1_WHEELCIRCUM)) // (radians/sec) calculate FOC speed limit using longboard speed limit (in meters/sec)
-    // #define ESC1_VELOC_MAX        min(_ESC1_VELOC_MAX_1,_ESC1_VELOC_MAX_2) // whichever speed limit is MORE CONSERVATIVE, use that one.
-    #define ESC1_VELOC_MAX        max(_ESC1_VELOC_MAX_1,_ESC1_VELOC_MAX_2) // ONLY FOR SHORT TEST (min/max reversed)
+    #ifdef MAX_SPEED_TEST
+      #define ESC1_VELOC_MAX        max(_ESC1_VELOC_MAX_1,_ESC1_VELOC_MAX_2) // ONLY FOR SHORT TEST (min/max reversed)
+    #else
+      #define ESC1_VELOC_MAX        min(_ESC1_VELOC_MAX_1,_ESC1_VELOC_MAX_2) // whichever speed limit is MORE CONSERVATIVE, use that one.
+    #endif
     //#define FOC_1_USE_HALL // defining default sensor type here is TODO!
     #define MOTOR1_WHEELCIRCUM   (0.0828f*PI) // (meters) circumference of wheel
     #define _HALL1_STEPSIZE  (TWO_PI / ((float)((2*ESC1_POLE_PAIRS) * 3))) // each hall sensor does 2*poles=20 steps per rotation, and there's 3 sensors (phase-offset)
@@ -79,10 +85,13 @@ _configure6PWM
     #define MOTOR1_CALIBRATED_DIRECTION   Direction::CW // with {yellow, green, blue} as {A,B,C} phases (both sensor AND motor!)
     #define MOTOR1_CALIBRATED_ZERO_ANGLE  (10*_HALL1_STEPSIZE) // calibration routine printed 1.05, and we can only measure discrete steps (without a second sensor)
     //// per-motor power limits:
-    // #define ESC1_CURRENT_LIMIT    min(22.0f,ESC_CURRENT_SENSOR_MAX) // motor is advertised as 22A max (even though this does not match the 24-36V rating)
-    // #define ESC1_VOLTAGE_LIMIT    min(ESC_VOLTAGE_LIMIT,400.0f/ESC1_CURRENT_LIMIT) // motor is rated for 400W, so this attempts to limit it to that
-    #define ESC1_CURRENT_LIMIT    max(22.0f,ESC_CURRENT_SENSOR_MAX) // ONLY FOR SHORT TEST (min/max reversed)
-    #define ESC1_VOLTAGE_LIMIT    max(ESC_VOLTAGE_LIMIT,400.0f/ESC1_CURRENT_LIMIT) // ONLY FOR SHORT TEST (min/max reversed) (note: i don't think current limit makes 100% sense here)
+    #ifdef MAX_SPEED_TEST
+      #define ESC1_CURRENT_LIMIT    max(22.0f,ESC_CURRENT_SENSOR_MAX) // ONLY FOR SHORT TEST (min/max reversed)
+      #define ESC1_VOLTAGE_LIMIT    max(ESC_VOLTAGE_LIMIT,400.0f/ESC1_CURRENT_LIMIT) // ONLY FOR SHORT TEST (min/max reversed) (note: i don't think current limit makes 100% sense here)
+    #else
+      #define ESC1_CURRENT_LIMIT    min(22.0f,ESC_CURRENT_SENSOR_MAX) // motor is advertised as 22A max (even though this does not match the 24-36V rating)
+      #define ESC1_VOLTAGE_LIMIT    min(ESC_VOLTAGE_LIMIT,400.0f/ESC1_CURRENT_LIMIT) // motor is rated for 400W, so this attempts to limit it to that
+    #endif
   #elif defined(MOTOR1_BRH5065)
     #warning("BRH5065 motor parameters are unfinished")
     //// an outrunner motor, advertised as 200kv, ~1200W, hall-sensors built-in
@@ -93,6 +102,8 @@ _configure6PWM
     #define ESC1_PHASE_INDUCT 0.0000616f // (Henry) measured using PROSTER BM4070, 200uH range
     #define ESC1_VELOC_MAX_1  (7220.0f*_RPM_TO_RADS) // (radians/sec) a simple speed limit, based on spec limit
     //#define FOC_1_USE_HALL // defining default sensor type here is TODO!
+    #define MOTOR1_WHEELCIRCUM   (0.0828f*PI) // copied value from MOTOR1_HUB83MM so code compiles. This does not strictly make sense
+    //// TODO: motor calibration (MOTOR1_CALIBRATED_DIRECTION, MOTOR1_CALIBRATED_ZERO_ANGLE, ...?)
     #define ESC1_CURRENT_LIMIT    min(46.0f,ESC_CURRENT_SENSOR_MAX) // motor is advertised as 45A max
     #define ESC1_VOLTAGE_LIMIT    min(min(ESC_VOLTAGE_LIMIT,1200.0f/ESC1_CURRENT_LIMIT),12.0f*4.2f) // motor is rated for 1200W or 12S, so this attempts to limit it to that
     //// REMEMBER: hall sensor pinout: black=GND, yellow=U, white=V, blue=W, red=+5V
@@ -140,8 +151,11 @@ _configure6PWM
     #define ESC2_PHASE_INDUCT 0.00037f // (Henry) measured using PROSTER BM4070, 2mH range
     #define _ESC2_VELOC_MAX_1     (2160.0f*_RPM_TO_RADS) // (radians/sec) a simple speed limit, based on spec limit
     #define _ESC2_VELOC_MAX_2     ((float)(TWO_PI*speedLimit/MOTOR2_WHEELCIRCUM)) // (radians/sec) calculate FOC speed limit using longboard speed limit (in meters/sec)
-    // #define ESC2_VELOC_MAX        min(_ESC2_VELOC_MAX_1,_ESC2_VELOC_MAX_2) // whichever speed limit is MORE CONSERVATIVE, use that one.
-    #define ESC2_VELOC_MAX        max(_ESC2_VELOC_MAX_1,_ESC2_VELOC_MAX_2) // ONLY FOR SHORT TEST (min/max reversed)
+    #ifdef MAX_SPEED_TEST
+      #define ESC2_VELOC_MAX        max(_ESC2_VELOC_MAX_1,_ESC2_VELOC_MAX_2) // ONLY FOR SHORT TEST (min/max reversed)
+    #else
+      #define ESC2_VELOC_MAX        min(_ESC2_VELOC_MAX_1,_ESC2_VELOC_MAX_2) // whichever speed limit is MORE CONSERVATIVE, use that one.
+    #endif
     //#define FOC_2_USE_HALL // defining default sensor type here is TODO!
     #define MOTOR2_WHEELCIRCUM   (0.0828f*PI) // (meters) circumference of wheel
     #define _HALL2_STEPSIZE  (TWO_PI / ((float)((2*ESC2_POLE_PAIRS) * 3))) // each hall sensor does 2*poles=20 steps per rotation, and there's 3 sensors (phase-offset)
@@ -149,10 +163,13 @@ _configure6PWM
     #define MOTOR2_CALIBRATED_DIRECTION   Direction::CW // with {yellow, green, blue} as {A,B,C} phases (both sensor AND motor!)
     #define MOTOR2_CALIBRATED_ZERO_ANGLE  (10*_HALL2_STEPSIZE) // calibration routine printed 1.05, and we can only measure discrete _HALL2_STEPSIZE steps (without a second sensor)
     //// per-motor power limits:
-    // #define ESC2_CURRENT_LIMIT    min(22.0f,ESC_CURRENT_SENSOR_MAX) // motor is advertised as 22A max (even though this does not match the 24-36V rating)
-    // #define ESC2_VOLTAGE_LIMIT    min(ESC_VOLTAGE_LIMIT,400.0f/ESC2_CURRENT_LIMIT) // motor is rated for 400W, so this attempts to limit it to that
-    #define ESC2_CURRENT_LIMIT    max(22.0f,ESC_CURRENT_SENSOR_MAX) // ONLY FOR SHORT TEST (min/max reversed)
-    #define ESC2_VOLTAGE_LIMIT    max(ESC_VOLTAGE_LIMIT,400.0f/ESC2_CURRENT_LIMIT) // ONLY FOR SHORT TEST (min/max reversed)
+    #ifdef MAX_SPEED_TEST
+      #define ESC2_CURRENT_LIMIT    max(22.0f,ESC_CURRENT_SENSOR_MAX) // ONLY FOR SHORT TEST (min/max reversed)
+      #define ESC2_VOLTAGE_LIMIT    max(ESC_VOLTAGE_LIMIT,400.0f/ESC2_CURRENT_LIMIT) // ONLY FOR SHORT TEST (min/max reversed)
+    #else
+      #define ESC2_CURRENT_LIMIT    min(22.0f,ESC_CURRENT_SENSOR_MAX) // motor is advertised as 22A max (even though this does not match the 24-36V rating)
+      #define ESC2_VOLTAGE_LIMIT    min(ESC_VOLTAGE_LIMIT,400.0f/ESC2_CURRENT_LIMIT) // motor is rated for 400W, so this attempts to limit it to that
+    #endif
   #elif defined(MOTOR2_BRH5065)
     #error("copy BRH5065 parameters from motor 1 once they're finished")
   #else
@@ -200,7 +217,7 @@ _configure6PWM
 #if ESC1_DEFINED
   #ifdef FOC_1_USE_HALL
     //// https://docs.simplefoc.com/hall_sensors
-    HallSensor ESC1_sensor = HallSensor(PIN_HALL_BEMF_1A,PIN_HALL_BEMF_1B,PIN_HALL_BEMF_1C, ESC1_POLE_PAIRS); // {pin_A,pin_B,pin_C, pole_pairs}
+    HallSensor ESC1_sensor = HallSensor(PIN_HALL_1A,PIN_HALL_ISNS_1B,PIN_HALL_ISNS_1C, ESC1_POLE_PAIRS); // {pin_A,pin_B,pin_C, pole_pairs}
     static void IRAM_ATTR ISR_HALL_1A(){ESC1_sensor.handleA();}
     static void IRAM_ATTR ISR_HALL_1B(){ESC1_sensor.handleB();}
     static void IRAM_ATTR ISR_HALL_1C(){ESC1_sensor.handleC();}
@@ -210,7 +227,7 @@ _configure6PWM
       ESC1_sensor.init();
       ESC1_sensor.enableInterrupts(ISR_HALL_1A, ISR_HALL_1B, ISR_HALL_1C);
     }
-    #if (defined(FOC_1_USE_AS5600) || defined(FOC_1_USE_BEMF))
+    #if (defined(FOC_1_USE_AS5600) || defined(FOC_1_USE_ISNS))
       #error("multiple input methods defined simultaniously")
     #endif
   #elif defined(FOC_1_USE_AS5600)
@@ -218,11 +235,15 @@ _configure6PWM
     // MagneticSensorI2CConfig_s
     MagneticSensorI2C ESC1_sensor = MagneticSensorI2C(AS5600_I2C); // ...
     void ESC1_initSensor() { /*setup dedicated I2C bus?*/ ESC1_sensor.init(&Wire); }
-    #if (defined(FOC_1_USE_HALL) || defined(FOC_1_USE_BEMF))
+    #if (defined(FOC_1_USE_HALL) || defined(FOC_1_USE_ISNS))
       #error("multiple input methods defined simultaniously")
     #endif
-  #elif defined(FOC_1_USE_BEMF)
-    #error("BEMF setup is TODO!")
+  #elif defined(FOC_1_USE_ISNS)
+    #ifdef TLB_PCB_R01
+      #error("can't use FOC_1_USE_ISNS on PCB R01 (it doesn't have phase shunt sensors)")
+    #endif
+    LowsideCurrentSense ESC1_sensor = LowsideCurrentSense(ISNS_SHUNT, ISNS_GAIN, _NC, PIN_HALL_ISNS_1B, PIN_HALL_ISNS_1C);
+    int ESC1_initSensor() { return(ESC1_sensor.init()); } // returns 1 on success
     #if (defined(FOC_1_USE_HALL) || defined(FOC_1_USE_AS5600))
       #error("multiple input methods defined simultaniously")
     #endif
@@ -233,7 +254,7 @@ _configure6PWM
 #if ESC2_DEFINED
   #ifdef FOC_2_USE_HALL
     //// https://docs.simplefoc.com/hall_sensors
-    HallSensor ESC2_sensor = HallSensor(PIN_HALL_BEMF_2A,PIN_HALL_BEMF_2B,PIN_HALL_BEMF_2C, ESC2_POLE_PAIRS); // {pin_A,pin_B,pin_C, pole_pairs}
+    HallSensor ESC2_sensor = HallSensor(PIN_HALL_2A_ISNS_2C,PIN_HALL_ISNS_2B,PIN_HALL_2C, ESC2_POLE_PAIRS); // {pin_A,pin_B,pin_C, pole_pairs}
     static void IRAM_ATTR ISR_HALL_2A(){ESC2_sensor.handleA();}  static void IRAM_ATTR ISR_HALL_2B(){ESC2_sensor.handleB();}  static void IRAM_ATTR ISR_HALL_2C(){ESC2_sensor.handleC();}
     void ESC2_initSensor() {
       ESC2_sensor.pullup = PCB_HALL_PULLUPS;
@@ -241,7 +262,7 @@ _configure6PWM
       ESC2_sensor.init();
       ESC2_sensor.enableInterrupts(ISR_HALL_2A, ISR_HALL_2B, ISR_HALL_2C);
     }
-    #if (defined(FOC_2_USE_AS5600) || defined(FOC_2_USE_BEMF))
+    #if (defined(FOC_2_USE_AS5600) || defined(FOC_2_USE_ISNS))
       #error("multiple input methods defined simultaniously")
     #endif
   #elif defined(FOC_2_USE_AS5600)
@@ -249,11 +270,17 @@ _configure6PWM
     // MagneticSensorI2CConfig_s
     MagneticSensorI2C ESC2_sensor = MagneticSensorI2C(AS5600_I2C); // ...
     void ESC2_initSensor() { /*setup dedicated I2C bus?*/ ESC2_sensor.init(&Wire); }
-    #if (defined(FOC_2_USE_HALL) || defined(FOC_2_USE_BEMF))
+    #if (defined(FOC_2_USE_HALL) || defined(FOC_2_USE_ISNS))
       #error("multiple input methods defined simultaniously")
     #endif
-  #elif defined(FOC_2_USE_BEMF)
-    #error("BEMF setup is TODO!")
+  #elif defined(FOC_2_USE_ISNS)
+    #ifdef TLB_PCB_R01
+      #error("can't use FOC_2_USE_ISNS on PCB R01 (it doesn't have phase shunt sensors)")
+    #elif defined(TLB_PCB_R02)
+      #warning("beware: using FOC_2_USE_ISNS on PCB R02 requires a patch-wire from phase A to C!")
+    #endif
+    LowsideCurrentSense ESC1_sensor = LowsideCurrentSense(ISNS_SHUNT, ISNS_GAIN, _NC, PIN_HALL_ISNS_2B, PIN_HALL_2A_ISNS_2C);
+    int ESC2_initSensor() { return(ESC2_sensor.init()); } // returns 1 on success
     #if (defined(FOC_2_USE_HALL) || defined(FOC_2_USE_AS5600))
       #error("multiple input methods defined simultaniously")
     #endif
@@ -294,20 +321,21 @@ _configure6PWM
     return(ESC2_driver.init()); // driver init
   }
 #endif // any MOTOR2_ defined
-//////////////////////////////////////// current sensors ////////////////////////////////////////
-/* simpleFOC has current sensing stuff built-in, but this is for single-phases, not the whole motor*/
-//// https://docs.simplefoc.com/current_sense
-//void ESC1_initCurrent() {}
-////current_sense.skip_align  = true; // default false
 //////////////////////////////////////// last FOC objects ///////////////////////////////////////
 #if ESC1_DEFINED
   BLDCMotor ESC1_motor = BLDCMotor(ESC1_POLE_PAIRS,ESC1_PHASE_RESIST,ESC1_KV_RATING,ESC1_PHASE_INDUCT); // ...
   void ESC1_initMotor(float supplyVoltage) {
-    ESC1_initSensor(); // init sensor
-    //// TODO: check ESC1_sensor.initialized ?
-    ESC1_motor.linkSensor(&ESC1_sensor); // link the motor to the sensor
+    #if (defined(FOC_1_USE_HALL) || defined(FOC_1_USE_AS5600))
+      ESC1_initSensor(); // init sensor
+      //// TODO: check ESC1_sensor.initialized ?
+      ESC1_motor.linkSensor(&ESC1_sensor); // link the motor to the sensor
+    #endif // NOTE: current-sense init is done after driver (see https://docs.simplefoc.com/low_side_current_sense)
     bool initSuccess = ESC1_initDriver(supplyVoltage); // init driver
     //// TODO: check ESC1_driver.initialized ? (same as initSuccess)
+    #ifdef FOC_1_USE_ISNS
+      ESC1_sensor.linkDriver(&ESC1_driver);
+      ESC1_initSensor(); // init sensor
+    #endif
     ESC1_motor.linkDriver(&ESC1_driver); // link the motor to the driver
     //ESC1_motor.linkCurrentSense(&ESC1_current); // link the motor to current sense
     #if RELEASE_BUILD_CHECK
@@ -334,17 +362,27 @@ _configure6PWM
       ESC1_motor.zero_electric_angle = MOTOR1_CALIBRATED_ZERO_ANGLE;
     #endif
     ESC1_motor.init(); // initialize motor
-    //ESC1_initCurrent(); // init current sensor(s)
+    #ifdef FOC_1_USE_ISNS
+      ESC1_initSensor(); // init sensor
+      ESC1_motor.linkCurrentSense(&ESC1_sensor); // link the motor to the sensor
+      //ESC1_sensor.skip_align  = true; // (default false) whether to perform alignment routine during initFOC()
+    #endif
   }
 #endif // any MOTOR1_ defined
 #if ESC2_DEFINED
   BLDCMotor ESC2_motor = BLDCMotor(ESC2_POLE_PAIRS,ESC2_PHASE_RESIST,ESC2_KV_RATING,ESC2_PHASE_INDUCT); // ...
   void ESC2_initMotor(float supplyVoltage) {
-    ESC2_initSensor(); // init sensor
-    //// TODO: check ESC2_sensor.initialized ?
-    ESC2_motor.linkSensor(&ESC2_sensor); // link the motor to the sensor
+    #if (defined(FOC_2_USE_HALL) || defined(FOC_2_USE_AS5600))
+      ESC2_initSensor(); // init sensor
+      //// TODO: check ESC2_sensor.initialized ?
+      ESC2_motor.linkSensor(&ESC2_sensor); // link the motor to the sensor
+    #endif
     bool initSuccess = ESC2_initDriver(supplyVoltage); // init driver
     //// TODO: check ESC2_driver.initialized ? (same as initSuccess)
+    #ifdef FOC_2_USE_ISNS
+      ESC2_sensor.linkDriver(&ESC2_driver);
+      ESC2_initSensor(); // init sensor
+    #endif // NOTE: current-sense init is done after driver (see https://docs.simplefoc.com/low_side_current_sense)
     ESC2_motor.linkDriver(&ESC2_driver); // link the motor to the driver
     //ESC2_motor.linkCurrentSense(&ESC2_current); // link the motor to current sense
     //ESC2_motor.useMonitoring(debugSerial); // debug!
@@ -369,7 +407,11 @@ _configure6PWM
       ESC2_motor.zero_electric_angle = MOTOR2_CALIBRATED_ZERO_ANGLE;
     #endif
     ESC2_motor.init(); // initialize motor
-    //ESC2_initCurrent(); // init current sensor(s)
+    #ifdef FOC_2_USE_ISNS
+      ESC2_initSensor(); // init sensor
+      ESC2_motor.linkCurrentSense(&ESC2_sensor); // link the motor to the sensor
+      //ESC2_sensor.skip_align  = true; // (default false) whether to perform alignment routine during initFOC()
+    #endif
   }
 #endif // any MOTOR2_ defined
 ////////////////////////////////////// GPIO initialization //////////////////////////////////////

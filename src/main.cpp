@@ -1,8 +1,23 @@
 /*
 
 
+R02 changes:
+- add low-side sense config
+  * HALL_2A and ISNS_2C should be patched. Make a note in the code as well
+- remove all BEMF code (because it was unfinished anyway)
+- update UVLO related code/comments/debug-prints?
+- (does 12V->5V diode change anything?)
+
+
 TODO:
-- ctrl+f 'ONLY FOR SHORT TEST' and restore those lines to normal
+- disable MAX_SPEED_TEST
+- merge SimpleFOC commits into my branch, or something like that
+  * first, recall what it was i changed, (and if it's worth keeping)
+    ~ i know i skip a floating point calculation, because the value was unused
+    ~ i added some exception handling for HALL sensor interrupts! (this was some decent code, i'd like to keep it)
+    ~ 
+  * then fetch the changes from the main repo and work them into mine(?)
+  * profit: https://github.com/thijses/Arduino-FOC/commit/538e59d1c93b4c41561f2d40025f36322d382104
 - logging, see note below, i actually think i've got a pretty good pitch
 - move LPF_velocity setting to define
 - rewrite defines and motor1/motor2 stuff to reduce the number of doubled code (copy-pasting is bad)
@@ -10,7 +25,7 @@ TODO:
 - write little LED_STATE struct, to make sure error states can only get worse, untill an explicit clear_error function is called
 - doubled voltage_limit FOC class members? check which one is leading
 - motor tuning (in depth)
-- BEMF??? voltage_bemf
+  * is voltage_bemf param relevant?
 - (not really my problem) i think the simpleFOC PP check is perhaps forgetting to account for imperfect hall sensor sampling.
   ~ during calibration, with PP set to 10, the check returned 12, and with PP set to 12, the check returned 14.4 (1.2x trend)
     i looked at the code at lines 253 of BLDCMotor.cpp, and concluded that the 'moved' position-delta was exactly 1 _HALL_STEPSIZE off each time.
@@ -49,6 +64,8 @@ encoder issues debugging:
 
 */
 
+// #define MAX_SPEED_TEST // increases most safety (software) limits, ONLY FOR SHORT TEST
+
 #include <Arduino.h>
 #include "TLB_logging.h"
 #include <SimpleFOC.h>
@@ -56,11 +73,14 @@ encoder issues debugging:
 
 
 #define _KPH_TO_MPS     (0.27777777778f) // 1/3.6
-#define _MPS_TO_KPH     (3.60000000000f) // 1/3.6
+#define _MPS_TO_KPH     (3.60000000000f) // 3.6
 #define _RADPS_TO_ROTPS (0.15915494309f) // 1/TWO_PI
 
-const float speedLimit = _KPH_TO_MPS*35.0; // (meters/sec)  ONLY FOR SHORT TEST!
-// const float speedLimit = _KPH_TO_MPS*25.0; // (meters/sec) speed limit of longboard
+#ifdef MAX_SPEED_TEST
+  const float speedLimit = _KPH_TO_MPS*35.0; // (meters/sec) ONLY FOR SHORT TEST!
+#else
+  const float speedLimit = _KPH_TO_MPS*25.0; // (meters/sec) speed limit of longboard
+#endif
 const float CPU_temperature_limit = 85.0f; // (deg Celsius) software temperature limit (starts ESCs free-wheeling)
 const uint32_t radioSilenceTimeout = 2000; // (millis) if radio has been silent for this long, start free-wheeling
 const bool forwardDirection = true; // a boolean used to flip forward direction. Personally, i prefer front-wheel drive, and i recently flipped the ESC around.
@@ -87,10 +107,15 @@ const bool FOC_core = ARDUINO_RUNNING_CORE; // which core to run FOC stuff on (s
 #include "TLB_ESCs.h" // ESC stuff got too long, so i put it in a header file
 #include "TLB_comm.h"
 
+#ifdef MOTOR1_WHEELCIRCUM // only for motor1, because i'm lazy
+  #define _RADPS_TO_KPH (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH)
+  #define _KPH_TO_RADPS (1.0f/_RADPS_TO_KPH)
+#endif
+
 //// TODO: abstract ESC1 away for these constants
 const float maxForwardTorqueScalar = 1.0;
 const float maxBrakingTorqueScalar = 0.75; // strong braking (to be softened by reducing it as speed reduces)
-const float brakingDecreaseThresh = 5.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // (radians/sec) once speed drops below this (final number in radians/sec), reduce braking
+const float brakingDecreaseThresh = 5.0f * _KPH_TO_RADPS; // (radians/sec) once speed drops below this (final number in radians/sec), reduce braking
 const float _brakingDecreaseThreshInverted = 1.0f/brakingDecreaseThresh; // efficiency trick
 //// TODO: bell-curve (sinusoidal/hyperbolic) braking (weak when going fast, weak when standing still, strong in the middle)
 
@@ -104,7 +129,7 @@ const float check_VBAT_bounds_ext[2] = {9.7, 60.0}; // (Volt) VBAT measurements 
 const float check_L_cur_bounds[2] = {-0.25, 1.0}; // (Amps) VBAT_L current measurements should fall within these bounds (for happy operation)
 const float check_L_cur_bounds_ext[2] = {-0.5, 5.0}; // (Amps) VBAT_L current measurements MUST fall within these bounds (otherwise something is on fire)
 const float check_M_cur_bounds[2] = {-0.5, ESC1_CURRENT_LIMIT}; // (Amps) VBAT_M# current measurements should fall within these bounds (for happy operation)
-const float check_M_cur_bounds_ext[2] = {-2.0, 25.0}; // (Amps) VBAT_M# current measurements MUST fall within these bounds (otherwise something is on fire)
+const float check_M_cur_bounds_ext[2] = {-2.0, ESC_CURRENT_SENSOR_MAX}; // (Amps) VBAT_M# current measurements MUST fall within these bounds (otherwise something is on fire)
 // #if defined(ESC1_CURRENT_LIMIT) && defined(ESC2_CURRENT_LIMIT) && (ESC1_CURRENT_LIMIT != ESC1_CURRENT_LIMIT) // seperate current limits for each motor?
 //   const float check_M2_cur_bounds[2] = {-5.0, 5.0}; // (Amps) VBAT_M# current measurements should fall within these bounds (for happy operation)
 //   const float check_M2_cur_bounds_ext[2] = {-25.0, 25.0}; // (Amps) VBAT_M# current measurements MUST fall within these bounds (otherwise something is on fire)
@@ -115,7 +140,7 @@ const float check_M_cur_bounds_ext[2] = {-2.0, 25.0}; // (Amps) VBAT_M# current 
 float VBAT_used_for_FOC = -1.0;
 int8_t cellCount; // gets initialized in setup()
 // const uint8_t minimumCellCount = ceil(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[0]); // battery can NEVER drop below absolute minimum cell voltage
-const uint8_t minimumCellCount = floor(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[1]); // fuck it, let the user decide when to fall of their board
+const uint8_t minimumCellCount = floor(check_VBAT_bounds_ext[0] / _lithiumCellThresholds[1]); // fuck it, let the user decide when to fall off their board
 float dynamic_VBAT_bounds[4] = {-1.0}; // (Volt) VBAT bounds set on boot, based on estimated battery cell count and _lithiumCellThresholds[]
 bool batteryWarningDone = false; // to avoid spam, only send/log/announce a battery warning once (untill reset)
 bool batteryErrorDone = false; // once the battery drops to dangerous voltages, stop all powered-control (and start free-wheeling). Also only log once
@@ -124,9 +149,9 @@ float CPU_temperature = 20.0;
 const float temperature_good_hyst = 5.0; // after an over-temperature event, the temperature needs to drop at least this much to be considered 'good' again
 volatile bool CPU_temperature_good=true;
 
-#ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+#ifdef DELAY_FREEWHEEL_UNTILL_SPEED_LOW
   bool delayedFreewheel=false; // (single-core) set to true instead of freewheelMultiCore
-  const float startFreewheelMaxSpeed = 3.0f / (_RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH); // (radians/sec) speed threshold at which freewheeling can safely start
+  const float startFreewheelMaxSpeed = 3.0f * _KPH_TO_RADPS; // (radians/sec) speed threshold at which freewheeling can safely start
   #ifdef DELAY_FREEWHEEL_SMOOTHLY // if this is defined, 
     //// TODO: delay constants & timer variable
     const float delayFreewheelThrotle = 0.0f; // (-1.0 to 1.0) throttle value (absolute(?)) to apply instead of freewheeling. Setting this low still causes a shock
@@ -167,12 +192,14 @@ const uint32_t debugPrintInterval = 500; // (millis)
 bool initPSUs() {
   //// first, enable pins
   #ifdef PIN_MAX_EN_HIGH_Z
+    //// TODO: open-source vs open-drain based on value of PIN_MAX_EN_HIGH_Z
     pinMode(PIN_MAX_EN, OUTPUT_OPEN_DRAIN);
   #else
     pinMode(PIN_MAX_EN, OUTPUT);
   #endif
   digitalWrite(PIN_MAX_EN, PIN_MAX_EN_ACTIVE); // make sure the device is enabled
   #ifdef PIN_TPS_EN_HIGH_Z
+    //// TODO: open-source vs open-drain based on value of PIN_TPS_EN_HIGH_Z
     pinMode(PIN_TPS_EN, OUTPUT_OPEN_DRAIN);
   #else
     pinMode(PIN_TPS_EN, OUTPUT);
@@ -270,9 +297,15 @@ void coreFOCloop() { // the code that loops the core that handles the FOC stuff
   
   if((millis()-coreFOCspeedUpdateTimer) >= coreFOCspeedUpdateInterval) { // pass speed value back to main core
     coreFOCspeedUpdateTimer = millis();
-    float currentSpeed = ((forwardDirection ? ESC1_motor.shaft_velocity : (-ESC1_motor.shaft_velocity))
-                          +(forwardDirection ? (-ESC2_motor.shaft_velocity) : ESC2_motor.shaft_velocity) // reverse velocity
-                          )*0.5f;
+    #if ESC1_DEFINED && ESC2_DEFINED
+      float currentSpeed = ((forwardDirection ? ESC1_motor.shaft_velocity : (-ESC1_motor.shaft_velocity))
+                            +(forwardDirection ? (-ESC2_motor.shaft_velocity) : ESC2_motor.shaft_velocity) // reverse velocity
+                            )*0.5f;
+    #elif ESC1_DEFINED
+      float currentSpeed = (forwardDirection ? ESC1_motor.shaft_velocity : (-ESC1_motor.shaft_velocity));
+    #else // ESC2_DEFINED
+      float currentSpeed = (forwardDirection ? (-ESC2_motor.shaft_velocity) : ESC2_motor.shaft_velocity); // reverse velocity
+    #endif
     currentSpeedMultiCore = currentSpeed;
   }
 
@@ -280,8 +313,12 @@ void coreFOCloop() { // the code that loops the core that handles the FOC stuff
     float newTarget = newTargetUnscaledMultiCore; // NOTE: still (-1.0 to 1.0) scalar
     newTargetUnscaledMultiCore_flag = false; // clearing this flag after newTargetUnscaledMultiCore is used is fancy, but currently unused
     newTarget *= ESC1_motor.voltage_limit; // scale to 'voltage'
-    ESC1_motor.target = (forwardDirection ? newTarget : (-newTarget));
-    ESC2_motor.target = (forwardDirection ? (-newTarget) : newTarget); // reverse input!
+    #if ESC1_DEFINED
+      ESC1_motor.target = (forwardDirection ? newTarget : (-newTarget));
+    #endif
+    #if ESC2_DEFINED
+      ESC2_motor.target = (forwardDirection ? (-newTarget) : newTarget); // reverse input!
+    #endif
   }
 }
 
@@ -294,14 +331,14 @@ void coreFOCsetup(void* arg) { // the 'task' that is started on the second core 
   }
   TLB_log_v("FOC basic init done");
 
-  //// some debug: (read back parameters (post-constraints), see 'ONLY FOR SHORT TEST')
-  float velocityLimitKPH = ESC1_motor.velocity_limit * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH; // (only motor 1 is printed)
+  //// some debug: (read back parameters (post-constraints), see MAX_SPEED_TEST)
+  float velocityLimitKPH = ESC1_motor.velocity_limit * _RADPS_TO_KPH; // (only motor 1 is printed)
   TLB_log_v("velocity limit: %.2f km/h", velocityLimitKPH);
   TLB_log_v("theoretical voltage limit: %.2f V", ESC1_VOLTAGE_LIMIT); // (only motor 1 is printed)
   TLB_log_v("voltage limit (this battery): %.2f V", ESC1_motor.voltage_limit); // (only motor 1 is printed)
   TLB_log_v("current limit (per motor): %.2f A", ESC1_motor.current_limit); // (only motor 1 is printed) NOTE: currently open-loop (sensor unused)
   TLB_log_v("power limit (per motor): %.2f W", ESC1_motor.voltage_limit * ESC1_motor.current_limit); // (only motor 1 is printed)
-  TLB_log_v("theoretical power limit: %.2f W", ESC1_VOLTAGE_LIMIT * ESC1_motor.current_limit); // (only motor 1 is printed)
+  TLB_log_v("theoretical power limit (per motor): %.2f W", ESC1_VOLTAGE_LIMIT * ESC1_motor.current_limit); // (only motor 1 is printed)
 
   //// init other stuff...
 
@@ -377,7 +414,7 @@ void coreOtherLoop() {
       batteryErrorDone = true; // avoid spam
       TLB_log_e("VBAT out of bounds!: %.2f", VBAT_now);
       neopixelWrite(RGB_BUILTIN, RGB_LED_ERROR); // 
-      #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+      #ifdef DELAY_FREEWHEEL_UNTILL_SPEED_LOW
         delayedFreewheel=true;
         if(abs(newTargetUnscaledMultiCore) > 0.03) {
           float polarizedThrottle = (newTargetUnscaledMultiCore > 0.0) ? delayFreewheelThrotle : (-delayFreewheelThrotle);
@@ -409,11 +446,11 @@ void coreOtherLoop() {
   static uint32_t lastTime = millis(); // note: static!
   if(TLB_rx.unpaired() || ((millis()-lastTime)>radioSilenceTimeout)) {
       if((!freewheelMultiCore)
-        #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW // this code is not the MOST legible, but it does the job
+        #ifdef DELAY_FREEWHEEL_UNTILL_SPEED_LOW // this code is not the MOST legible, but it does the job
           && (!delayedFreewheel)
         #endif
           ) { // only once
-        #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+        #ifdef DELAY_FREEWHEEL_UNTILL_SPEED_LOW
           delayedFreewheel=true;
           if(abs(newTargetUnscaledMultiCore) > 0.03) {
             float polarizedThrottle = (newTargetUnscaledMultiCore > 0.0) ? delayFreewheelThrotle : (-delayFreewheelThrotle);
@@ -431,7 +468,7 @@ void coreOtherLoop() {
       if(TLB_rx.update()) { lastTime = millis(); } // still need to run update function (to pair and such)
   } else {
     if(freewheelMultiCore && (!batteryErrorDone)) {
-      #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+      #ifdef DELAY_FREEWHEEL_UNTILL_SPEED_LOW
         delayedFreewheel=false;
       #endif
       freewheelMultiCore=false;
@@ -483,7 +520,7 @@ void coreOtherLoop() {
     }
   }
 
-  #ifdef DELAY_FREEWHEEL_UNTILL_SPEEL_LOW
+  #ifdef DELAY_FREEWHEEL_UNTILL_SPEED_LOW
     if(delayedFreewheel && (!freewheelMultiCore)) {
       float currentSpeed = currentSpeedMultiCore; // copy volatile value
       #ifdef DELAY_FREEWHEEL_SMOOTHLY
@@ -509,7 +546,7 @@ void coreOtherLoop() {
       // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_angle, ESC2_motor.shaft_angle);
       // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_angle, ESC1_motor.shaft_velocity);
       // debugSerial.printf("%.2f, %.2f\n", ESC2_motor.shaft_angle, ESC2_motor.shaft_velocity);
-      // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH, ESC2_motor.shaft_velocity * _RADPS_TO_ROTPS * MOTOR1_WHEELCIRCUM * _MPS_TO_KPH);
+      // debugSerial.printf("%.2f, %.2f\n", ESC1_motor.shaft_velocity * _RADPS_TO_KPH, ESC2_motor.shaft_velocity * _RADPS_TO_KPH);
       // debugSerial.printf("cur %.2f,  %.2f, %.2f \t VBAT: %.2f\n", cur_L_now, cur_M1_now, cur_M2_now, VBAT_now);
       // debugSerial.printf("spd: %lu\n", spd_now);
       // debugSerial.printf("CPU temp: %.2f\n",CPU_temperature);
